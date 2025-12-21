@@ -3,7 +3,7 @@
 #include <unistd.h>
 
 typedef enum {w, b} State;
-#define wd (25 * 6)
+#define wd (25 * 60)
 #define bd (5 * 60)
 
 void printTimer(State state, int sec){
@@ -24,7 +24,7 @@ int main(){
             sleep(1);
 
         }
-        print("\n");//new lien
+        printf("\n");//new lien
 
         //state change
         if (current == w){
