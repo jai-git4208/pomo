@@ -226,7 +226,7 @@ int main(int argc, char *argv[]){
     SDL_GL_SetSwapInterval(1); //VSYNCCCCCCC!!!
 
     TTF_Font * font_large = TTF_OpenFont(FONT_PATH, 90);
-    TTF_Font * font_small = TTF_OpenFont(FONT_PATH, 24);
+    TTF_Font * font_small = TTF_OpenFont(FONT_PATH, 16);
 
     Timer timer = {w, (double)wd, false, SDL_GetTicks()};
     CachedText time_cache = {0}, label_cache = {0};
