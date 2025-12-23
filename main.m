@@ -24,7 +24,7 @@ typedef enum { STATE_WORK, STATE_BREAK } TimerState;
 @property(nonatomic, strong) PomoView *pomoView;
 @property(nonatomic, strong) NSTimer *timer;
 - (void)handleKeyDown:(NSEvent *)event;
-- (void)snapToNearestWindow;
+- (void)snapToNearestCorner;
 @end
 
 @implementation PomoView
@@ -42,7 +42,7 @@ typedef enum { STATE_WORK, STATE_BREAK } TimerState;
   CGFloat thickness = outerR - innerR;
   CGFloat midR = (outerR + innerR) / 2.0;
 
-  // Draw background ring
+  //draw background ring
   CGContextSetLineWidth(ctx, thickness);
   CGContextSetLineCap(ctx, kCGLineCapRound);
   [[NSColor colorWithDeviceRed:0.15 green:0.17 blue:0.25 alpha:0.7] setStroke];
@@ -73,7 +73,7 @@ typedef enum { STATE_WORK, STATE_BREAK } TimerState;
   NSString *timeStr = [NSString stringWithFormat:@"%02d:%02d", s / 60, s % 60];
   NSString *labelStr =
       self.paused
-          ? @"PAUSED"
+          ? @"PAUSED BAD BOY :|"
           : (self.state == STATE_WORK ? @"GOOD BOY :3" : @"BREAK! ENJOY");
 
   NSMutableParagraphStyle *style = [[NSMutableParagraphStyle alloc] init];
@@ -116,7 +116,7 @@ typedef enum { STATE_WORK, STATE_BREAK } TimerState;
 - (void)mouseDown:(NSEvent *)event {
   [self.window performWindowDragWithEvent:event];
   // After performWindowDragWithEvent returns, the drag is finished.
-  [(PomoAppDelegate *)[NSApp delegate] snapToNearestWindow];
+  [(PomoAppDelegate *)[NSApp delegate] snapToNearestCorner];
 }
 
 @end
@@ -144,7 +144,7 @@ typedef enum { STATE_WORK, STATE_BREAK } TimerState;
   [self.window setBackgroundColor:[NSColor clearColor]];
   [self.window setHasShadow:NO];
   [self.window setLevel:NSFloatingWindowLevel];
-  [self.window setMovableByWindowBackground:YES];
+  [self.window setMovableByWindowBackground:NO];
   [self.window center];
 
   self.pomoView = [[PomoView alloc] initWithFrame:frame];
@@ -164,6 +164,10 @@ typedef enum { STATE_WORK, STATE_BREAK } TimerState;
   [[NSRunLoop mainRunLoop] addTimer:self.timer forMode:NSRunLoopCommonModes];
 }
 
+- (void)applicationDidResignActive:(NSNotification *)notification {
+  [self snapToNearestCorner];
+}
+
 - (void)tick:(NSTimer *)timer {
   if (!self.pomoView.paused) {
     self.pomoView.secRemaining -= 1.0 / 60.0;
@@ -180,84 +184,38 @@ typedef enum { STATE_WORK, STATE_BREAK } TimerState;
   [self.pomoView setNeedsDisplay:YES];
 }
 
-- (void)snapToNearestWindow {
+- (void)snapToNearestCorner {
   NSRect myFrame = self.window.frame;
-  CGFloat snapDistance = 20.0;
-  NSRect snapFrame = myFrame;
+  NSScreen *screen = [self.window screen];
+  if (!screen)
+    screen = [NSScreen mainScreen];
+  NSRect sFrame = [screen visibleFrame];
 
-  // 1. Snapping to screens
-  for (NSScreen *screen in [NSScreen screens]) {
-    NSRect sFrame = [screen visibleFrame];
+  // 4 possible corners
+  NSPoint topLeft =
+      NSMakePoint(NSMinX(sFrame), NSMaxY(sFrame) - myFrame.size.height);
+  NSPoint topRight = NSMakePoint(NSMaxX(sFrame) - myFrame.size.width,
+                                 NSMaxY(sFrame) - myFrame.size.height);
+  NSPoint bottomLeft = NSMakePoint(NSMinX(sFrame), NSMinY(sFrame));
+  NSPoint bottomRight =
+      NSMakePoint(NSMaxX(sFrame) - myFrame.size.width, NSMinY(sFrame));
 
-    // Left
-    if (fabs(NSMinX(myFrame) - NSMinX(sFrame)) < snapDistance)
-      snapFrame.origin.x = NSMinX(sFrame);
-    // Right
-    if (fabs(NSMaxX(myFrame) - NSMaxX(sFrame)) < snapDistance)
-      snapFrame.origin.x = NSMaxX(sFrame) - myFrame.size.width;
-    // Bottom
-    if (fabs(NSMinY(myFrame) - NSMinY(sFrame)) < snapDistance)
-      snapFrame.origin.y = NSMinY(sFrame);
-    // Top
-    if (fabs(NSMaxY(myFrame) - NSMaxY(sFrame)) < snapDistance)
-      snapFrame.origin.y = NSMaxY(sFrame) - myFrame.size.height;
-  }
+  NSPoint corners[] = {topLeft, topRight, bottomLeft, bottomRight};
+  NSPoint nearestCorner = corners[0];
+  CGFloat minDist = CGFLOAT_MAX;
 
-  // 2. Snapping to other windows
-  CFArrayRef windowList = CGWindowListCopyWindowInfo(
-      kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements,
-      kCGNullWindowID);
-  if (windowList) {
-    NSArray *windows = (__bridge NSArray *)windowList;
-    NSInteger myWindowNumber = [self.window windowNumber];
-    CGFloat mainScreenHeight = NSMaxY([[[NSScreen screens] firstObject] frame]);
-
-    for (NSDictionary *dict in windows) {
-      NSNumber *winNum = dict[(id)kCGWindowNumber];
-      if ([winNum integerValue] == myWindowNumber)
-        continue;
-
-      CGRect cgBounds;
-      CGRectMakeWithDictionaryRepresentation(
-          (CFDictionaryRef)dict[(id)kCGWindowBounds], &cgBounds);
-
-      // Convert CG bounds to Cocoa coordinates
-      // CG (0,0) is top-left of main screen. Cocoa (0,0) is bottom-left.
-      NSRect otherFrame = NSMakeRect(
-          cgBounds.origin.x,
-          mainScreenHeight - (cgBounds.origin.y + cgBounds.size.height),
-          cgBounds.size.width, cgBounds.size.height);
-
-      // Snap edges
-      // My Left to Other Right
-      if (fabs(NSMinX(myFrame) - NSMaxX(otherFrame)) < snapDistance)
-        snapFrame.origin.x = NSMaxX(otherFrame);
-      // My Right to Other Left
-      if (fabs(NSMaxX(myFrame) - NSMinX(otherFrame)) < snapDistance)
-        snapFrame.origin.x = NSMinX(otherFrame) - myFrame.size.width;
-      // My Bottom to Other Top
-      if (fabs(NSMinY(myFrame) - NSMaxY(otherFrame)) < snapDistance)
-        snapFrame.origin.y = NSMaxY(otherFrame);
-      // My Top to Other Bottom
-      if (fabs(NSMaxY(myFrame) - NSMinY(otherFrame)) < snapDistance)
-        snapFrame.origin.y = NSMinY(otherFrame) - myFrame.size.height;
-
-      // Align edges
-      // My Left to Other Left
-      if (fabs(NSMinX(myFrame) - NSMinX(otherFrame)) < snapDistance)
-        snapFrame.origin.x = NSMinX(otherFrame);
-      // My Right to Other Right
-      if (fabs(NSMaxX(myFrame) - NSMaxX(otherFrame)) < snapDistance)
-        snapFrame.origin.x = NSMaxX(otherFrame) - myFrame.size.width;
-      // My Top to Other Top
-      if (fabs(NSMaxY(myFrame) - NSMaxY(otherFrame)) < snapDistance)
-        snapFrame.origin.y = NSMaxY(otherFrame) - myFrame.size.height;
-      // My Bottom to Other Bottom
-      if (fabs(NSMinY(myFrame) - NSMinY(otherFrame)) < snapDistance)
-        snapFrame.origin.y = NSMinY(otherFrame);
+  for (int i = 0; i < 4; i++) {
+    CGFloat dx = myFrame.origin.x - corners[i].x;
+    CGFloat dy = myFrame.origin.y - corners[i].y;
+    CGFloat dist = dx * dx + dy * dy;
+    if (dist < minDist) {
+      minDist = dist;
+      nearestCorner = corners[i];
     }
-    CFRelease(windowList);
   }
+
+  NSRect snapFrame = myFrame;
+  snapFrame.origin = nearestCorner;
 
   if (!NSEqualRects(myFrame, snapFrame)) {
     [self.window setFrame:snapFrame display:YES animate:YES];
