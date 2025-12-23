@@ -1,3 +1,4 @@
+#import <AVFoundation/AVFoundation.h>
 #import <ApplicationServices/ApplicationServices.h>
 #import <Cocoa/Cocoa.h>
 #import <QuartzCore/QuartzCore.h>
@@ -23,6 +24,10 @@ typedef enum { STATE_WORK, STATE_BREAK } TimerState;
 @property(nonatomic, strong) NSWindow *window;
 @property(nonatomic, strong) PomoView *pomoView;
 @property(nonatomic, strong) NSTimer *timer;
+@property(nonatomic, assign) double pauseDuration;
+@property(nonatomic, assign) NSPoint baseOrigin;
+@property(nonatomic, assign) BOOL isShaking;
+@property(nonatomic, strong) AVAudioPlayer *audioPlayer;
 - (void)handleKeyDown:(NSEvent *)event;
 - (void)snapToNearestCorner;
 @end
@@ -42,7 +47,7 @@ typedef enum { STATE_WORK, STATE_BREAK } TimerState;
   CGFloat thickness = outerR - innerR;
   CGFloat midR = (outerR + innerR) / 2.0;
 
-  //draw background ring
+  // Draw background ring
   CGContextSetLineWidth(ctx, thickness);
   CGContextSetLineCap(ctx, kCGLineCapRound);
   [[NSColor colorWithDeviceRed:0.15 green:0.17 blue:0.25 alpha:0.7] setStroke];
@@ -73,7 +78,7 @@ typedef enum { STATE_WORK, STATE_BREAK } TimerState;
   NSString *timeStr = [NSString stringWithFormat:@"%02d:%02d", s / 60, s % 60];
   NSString *labelStr =
       self.paused
-          ? @"PAUSED BAD BOY :|"
+          ? @"PAUSED"
           : (self.state == STATE_WORK ? @"GOOD BOY :3" : @"BREAK! ENJOY");
 
   NSMutableParagraphStyle *style = [[NSMutableParagraphStyle alloc] init];
@@ -162,6 +167,28 @@ typedef enum { STATE_WORK, STATE_BREAK } TimerState;
                                               userInfo:nil
                                                repeats:YES];
   [[NSRunLoop mainRunLoop] addTimer:self.timer forMode:NSRunLoopCommonModes];
+
+  NSURL *audioURL = [[NSBundle mainBundle] URLForResource:@"res/timer"
+                                            withExtension:@"mp3"];
+  if (!audioURL) {
+    // Fallback if not in bundle (which it won't be since we are a simple
+    // executable)
+    NSString *path = [[[[NSProcessInfo processInfo] arguments] objectAtIndex:0]
+        stringByDeletingLastPathComponent];
+    path = [path stringByAppendingPathComponent:@"res/timer.mp3"];
+    audioURL = [NSURL fileURLWithPath:path];
+  }
+
+  NSError *error = nil;
+  self.audioPlayer = [[AVAudioPlayer alloc] initWithContentsOfURL:audioURL
+                                                            error:&error];
+  if (self.audioPlayer) {
+    self.audioPlayer.numberOfLoops = -1;
+    [self.audioPlayer prepareToPlay];
+    [self.audioPlayer play];
+  } else {
+    NSLog(@"Failed to load audio: %@", error);
+  }
 }
 
 - (void)applicationDidResignActive:(NSNotification *)notification {
@@ -170,6 +197,31 @@ typedef enum { STATE_WORK, STATE_BREAK } TimerState;
 
 - (void)tick:(NSTimer *)timer {
   if (!self.pomoView.paused) {
+    if (self.isShaking) {
+      NSRect frame = self.window.frame;
+      frame.origin = self.baseOrigin;
+      [self.window setFrame:frame display:YES animate:NO];
+      self.isShaking = NO;
+    }
+    self.pauseDuration = 0;
+    if (self.audioPlayer && !self.audioPlayer.playing) {
+      [self.audioPlayer play];
+    }
+
+    // sync audio
+    if (self.audioPlayer) {
+      double elapsed;
+      if (self.pomoView.state == STATE_WORK) {
+        elapsed = WORK_DURATION - self.pomoView.secRemaining;
+      } else {
+        elapsed = WORK_DURATION + (BREAK_DURATION - self.pomoView.secRemaining);
+      }
+
+      if (fabs(self.audioPlayer.currentTime - elapsed) > 1.0) {
+        self.audioPlayer.currentTime = elapsed;
+      }
+    }
+
     self.pomoView.secRemaining -= 1.0 / 60.0;
     if (self.pomoView.secRemaining <= 0) {
       if (self.pomoView.state == STATE_WORK) {
@@ -179,6 +231,23 @@ typedef enum { STATE_WORK, STATE_BREAK } TimerState;
         self.pomoView.state = STATE_WORK;
         self.pomoView.secRemaining = WORK_DURATION;
       }
+    }
+  } else {
+    if (self.audioPlayer && self.audioPlayer.playing) {
+      [self.audioPlayer pause];
+    }
+    self.pauseDuration += 1.0 / 60.0;
+    if (self.pauseDuration > 300.0) { // 5 minutes
+      if (!self.isShaking) {
+        self.baseOrigin = self.window.frame.origin;
+        self.isShaking = YES;
+      }
+      NSRect frame = self.window.frame;
+      int offsetX = (rand() % 5) - 2;
+      int offsetY = (rand() % 5) - 2;
+      frame.origin.x = self.baseOrigin.x + offsetX;
+      frame.origin.y = self.baseOrigin.y + offsetY;
+      [self.window setFrame:frame display:YES animate:NO];
     }
   }
   [self.pomoView setNeedsDisplay:YES];

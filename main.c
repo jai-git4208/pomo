@@ -1,14 +1,9 @@
 #include <SDL2/SDL.h>
 #include <SDL2/SDL_opengl.h>
-#include <SDL2/SDL_syswm.h>
 #include <SDL2/SDL_ttf.h>
 #include <math.h>
 #include <stdbool.h>
 #include <stdio.h>
-#if defined(__APPLE__)
-#include <objc/message.h>
-#include <objc/objc-runtime.h>
-#endif
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -27,6 +22,9 @@ typedef struct {
   double sec_remain;
   bool paused;
   uint32_t last_frame_time;
+  double pause_duration;
+  int base_x, base_y;
+  bool is_shaking;
 } Timer;
 
 typedef struct {
@@ -236,16 +234,16 @@ void snap_to_corner(SDL_Window *window) {
 
   // 4 corners of the usable bounds
   SDL_Point corners[] = {
-      {usableBounds.x, usableBounds.y},                             // top-Left
-      {usableBounds.x + usableBounds.w - ww_local, usableBounds.y}, // top-Right
+      {usableBounds.x, usableBounds.y},                             // Top-Left
+      {usableBounds.x + usableBounds.w - ww_local, usableBounds.y}, // Top-Right
       {usableBounds.x,
-       usableBounds.y + usableBounds.h - wh_local}, // bottom-Left
+       usableBounds.y + usableBounds.h - wh_local}, // Bottom-Left
       {usableBounds.x + usableBounds.w - ww_local,
-       usableBounds.y + usableBounds.h - wh_local} // bottom-Right
+       usableBounds.y + usableBounds.h - wh_local} // Bottom-Right
   };
 
   SDL_Point nearestCorner = corners[0];
-  long min_dist_sq = 2000000000; // large enough ig?
+  long min_dist_sq = 2000000000; // Large enough
 
   for (int i = 0; i < 4; i++) {
     long dx = (long)wx - corners[i].x;
@@ -257,9 +255,9 @@ void snap_to_corner(SDL_Window *window) {
     }
   }
 
-  // Set window position. So SDL2 doesn't have built-in smooth animation
+  // Set window position. Note: SDL2 doesn't have built-in smooth animation
   // like Cocoa's animate:YES, so it will snap instantly. To animate,
-  // I would need a custom interpolation loop.
+  // one would need a custom interpolation loop.
   SDL_SetWindowPosition(window, nearestCorner.x, nearestCorner.y);
 }
 
@@ -273,28 +271,9 @@ int main(int argc, char *argv[]) {
 
   // wimndow
 
-  SDL_Window *window = SDL_CreateWindow(
-      "pomopomo", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, ww, wh,
-      SDL_WINDOW_OPENGL | SDL_WINDOW_SHOWN | SDL_WINDOW_BORDERLESS);
-
-#if defined(__APPLE__)
-  SDL_SysWMinfo wmInfo;
-  SDL_VERSION(&wmInfo.version);
-  if (SDL_GetWindowWMInfo(window, &wmInfo)) {
-    id nswindow = (id)wmInfo.info.cocoa.window;
-    // [nswindow setOpaque:NO]
-    ((void (*)(id, SEL, BOOL))objc_msgSend)(nswindow,
-                                            sel_registerName("setOpaque:"), NO);
-    // [nswindow setBackgroundColor:[NSColor clearColor]]
-    id clearColor = ((id(*)(Class, SEL))objc_msgSend)(
-        objc_getClass("NSColor"), sel_registerName("clearColor"));
-    ((void (*)(id, SEL, id))objc_msgSend)(
-        nswindow, sel_registerName("setBackgroundColor:"), clearColor);
-    // [nswindow setHasShadow:NO]
-    ((void (*)(id, SEL, BOOL))objc_msgSend)(
-        nswindow, sel_registerName("setHasShadow:"), NO);
-  }
-#endif
+  SDL_Window *window = SDL_CreateWindow("pomopomo", SDL_WINDOWPOS_CENTERED,
+                                        SDL_WINDOWPOS_CENTERED, ww, wh,
+                                        SDL_WINDOW_OPENGL | SDL_WINDOW_SHOWN);
 
   SDL_SetWindowHitTest(window, drag_hit_test, NULL);
 
@@ -304,7 +283,7 @@ int main(int argc, char *argv[]) {
   TTF_Font *font_large = TTF_OpenFont(FONT_PATH, 40);
   TTF_Font *font_small = TTF_OpenFont(FONT_PATH, 10);
 
-  Timer timer = {w, (double)wd, false, SDL_GetTicks()};
+  Timer timer = {w, (double)wd, false, SDL_GetTicks(), 0.0, 0, 0, false};
   CachedText time_cache = {0}, label_cache = {0};
   bool running = true;
   SDL_Event e;
@@ -332,6 +311,11 @@ int main(int argc, char *argv[]) {
     timer.last_frame_time = now;
 
     if (!timer.paused) {
+      if (timer.is_shaking) {
+        SDL_SetWindowPosition(window, timer.base_x, timer.base_y);
+        timer.is_shaking = false;
+      }
+      timer.pause_duration = 0;
       timer.sec_remain -= dt;
       if (timer.sec_remain <= 0) {
         if (timer.state == w) {
@@ -342,15 +326,30 @@ int main(int argc, char *argv[]) {
           timer.sec_remain = wd;
         }
       }
+    } else {
+      timer.pause_duration += dt;
+      if (timer.pause_duration > 300.0) { // 5 minutes
+        if (!timer.is_shaking) {
+          SDL_GetWindowPosition(window, &timer.base_x, &timer.base_y);
+          timer.is_shaking = true;
+        }
+        int offsetX = (rand() % 5) - 2;
+        int offsetY = (rand() % 5) - 2;
+        SDL_SetWindowPosition(window, timer.base_x + offsetX,
+                              timer.base_y + offsetY);
+      }
     }
 
-    glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
+    glClearColor(0.10f, 0.12f, 0.18f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT);
     glMatrixMode(GL_PROJECTION);
     glLoadIdentity();
     glOrtho(0, ww, wh, 0, -1, 1);
     glMatrixMode(GL_MODELVIEW);
     glLoadIdentity();
+
+    // Solid background disc
+    draw_filled_circle(ww / 2.0f, wh / 2.0f, 100, 0.15f, 0.17f, 0.25f, 1.0f);
 
     // back ringy
     draw_ring_segment(ww / 2.0f, wh / 2.0f, 80, 75, 0, 360, 0.15f, 0.17f, 0.25f,
