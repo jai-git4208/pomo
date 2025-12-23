@@ -16,15 +16,28 @@
 #define ww 200
 #define FONT_PATH "/System/Library/Fonts/Supplemental/Arial.ttf"
 #define CONFIG_PATH "pomo.cfg"
+#define STREAK_PATH "streak.txt"
+#include <time.h>
 
 typedef enum { w, b } State;
 
 typedef struct {
   int work_min;
   int break_min;
+  int long_break_min;
+  int sessions_until_long;
   bool sound_on;
+  bool auto_start;
+  int opacity; // 0-100
+  int volume;  // 0-128
   int x, y;
 } Config;
+
+typedef struct {
+  char last_date[11]; // YYYY-MM-DD
+  int daily_sessions;
+  int consecutive_days;
+} Streak;
 
 typedef struct {
   State state;
@@ -40,6 +53,11 @@ typedef struct {
   Config config;
   SDL_Window *settings_win;
   SDL_Renderer *settings_ren;
+  int session_count;
+  int selected_setting;
+  Streak streak;
+  SDL_Window *streak_win;
+  SDL_Renderer *streak_ren;
 } Timer;
 
 typedef struct {
@@ -242,7 +260,12 @@ void save_config(const Config *cfg) {
     return;
   fprintf(f, "work_time=%d\n", cfg->work_min);
   fprintf(f, "break_time=%d\n", cfg->break_min);
+  fprintf(f, "long_break_time=%d\n", cfg->long_break_min);
+  fprintf(f, "sessions_until_long=%d\n", cfg->sessions_until_long);
   fprintf(f, "sound=%d\n", cfg->sound_on ? 1 : 0);
+  fprintf(f, "auto_start=%d\n", cfg->auto_start ? 1 : 0);
+  fprintf(f, "opacity=%d\n", cfg->opacity);
+  fprintf(f, "volume=%d\n", cfg->volume);
   fprintf(f, "x=%d\n", cfg->x);
   fprintf(f, "y=%d\n", cfg->y);
   fclose(f);
@@ -251,7 +274,12 @@ void save_config(const Config *cfg) {
 void load_config(Config *cfg) {
   cfg->work_min = 25;
   cfg->break_min = 5;
+  cfg->long_break_min = 15;
+  cfg->sessions_until_long = 4;
   cfg->sound_on = true;
+  cfg->auto_start = false;
+  cfg->opacity = 100;
+  cfg->volume = 128;
   cfg->x = SDL_WINDOWPOS_CENTERED;
   cfg->y = SDL_WINDOWPOS_CENTERED;
 
@@ -266,7 +294,17 @@ void load_config(Config *cfg) {
       continue;
     if (sscanf(line, "break_time=%d", &cfg->break_min) == 1)
       continue;
+    if (sscanf(line, "long_break_time=%d", &cfg->long_break_min) == 1)
+      continue;
+    if (sscanf(line, "sessions_until_long=%d", &cfg->sessions_until_long) == 1)
+      continue;
     if (sscanf(line, "sound=%d", (int *)&cfg->sound_on) == 1)
+      continue;
+    if (sscanf(line, "auto_start=%d", (int *)&cfg->auto_start) == 1)
+      continue;
+    if (sscanf(line, "opacity=%d", &cfg->opacity) == 1)
+      continue;
+    if (sscanf(line, "volume=%d", &cfg->volume) == 1)
       continue;
     if (sscanf(line, "x=%d", &cfg->x) == 1)
       continue;
@@ -274,6 +312,70 @@ void load_config(Config *cfg) {
       continue;
   }
   fclose(f);
+}
+
+void save_streak(const Streak *s) {
+  FILE *f = fopen(STREAK_PATH, "w");
+  if (!f)
+    return;
+  fprintf(f, "last_date=%s\n", s->last_date);
+  fprintf(f, "daily_sessions=%d\n", s->daily_sessions);
+  fprintf(f, "consecutive_days=%d\n", s->consecutive_days);
+  fclose(f);
+}
+
+void load_streak(Streak *s) {
+  strcpy(s->last_date, "0000-00-00");
+  s->daily_sessions = 0;
+  s->consecutive_days = 0;
+
+  FILE *f = fopen(STREAK_PATH, "r");
+  if (!f)
+    return;
+  char line[128];
+  while (fgets(line, sizeof(line), f)) {
+    if (sscanf(line, "last_date=%10s", s->last_date) == 1)
+      continue;
+    if (sscanf(line, "daily_sessions=%d", &s->daily_sessions) == 1)
+      continue;
+    if (sscanf(line, "consecutive_days=%d", &s->consecutive_days) == 1)
+      continue;
+  }
+  fclose(f);
+}
+
+void update_streak(Streak *s) {
+  time_t now = time(NULL);
+  struct tm *t = localtime(&now);
+  char today[11];
+  strftime(today, sizeof(today), "%Y-%m-%d", t);
+
+  if (strcmp(s->last_date, today) == 0) {
+    s->daily_sessions++;
+  } else {
+    // Check if it was yesterday
+    struct tm last_tm = {0};
+    int y, m, d;
+    if (sscanf(s->last_date, "%d-%d-%d", &y, &m, &d) == 3) {
+      last_tm.tm_year = y - 1900;
+      last_tm.tm_mon = m - 1;
+      last_tm.tm_mday = d;
+      last_tm.tm_isdst = -1;
+      time_t last_t = mktime(&last_tm);
+
+      double diff = difftime(now, last_t);
+      if (diff > 0 && diff <= 86400 * 1.5) { // Roughly within a day
+        s->consecutive_days++;
+      } else {
+        s->consecutive_days = 1;
+      }
+    } else {
+      s->consecutive_days = 1;
+    }
+    s->daily_sessions = 1;
+    strcpy(s->last_date, today);
+  }
+  save_streak(s);
 }
 
 void reset_timer(Timer *timer, SDL_Window *window) {
@@ -298,50 +400,121 @@ void open_settings_window(Timer *timer, TTF_Font *font) {
     return;
 
   timer->settings_win =
-      SDL_CreateWindow("Settings", SDL_WINDOWPOS_CENTERED,
-                       SDL_WINDOWPOS_CENTERED, 300, 150, SDL_WINDOW_SHOWN);
+      SDL_CreateWindow("Advanced Settings", SDL_WINDOWPOS_CENTERED,
+                       SDL_WINDOWPOS_CENTERED, 400, 350, SDL_WINDOW_SHOWN);
   timer->settings_ren =
       SDL_CreateRenderer(timer->settings_win, -1, SDL_RENDERER_ACCELERATED);
+  timer->selected_setting = 0;
 }
 
 void render_settings(Timer *timer, TTF_Font *font) {
   if (!timer->settings_win)
     return;
 
-  SDL_SetRenderDrawColor(timer->settings_ren, 30, 33, 40, 255);
+  SDL_SetRenderDrawColor(timer->settings_ren, 20, 22, 28, 255);
   SDL_RenderClear(timer->settings_ren);
 
   SDL_Color white = {255, 255, 255, 255};
-  char buf[64];
+  SDL_Color yellow = {255, 215, 0, 255};
+  char buf[128];
 
-  // Work
-  sprintf(buf, "Work: %d min (Use Up/Down)", timer->config.work_min);
-  SDL_Surface *s = TTF_RenderText_Blended(font, buf, white);
-  SDL_Texture *t = SDL_CreateTextureFromSurface(timer->settings_ren, s);
-  SDL_Rect r = {20, 20, s->w, s->h};
-  SDL_RenderCopy(timer->settings_ren, t, NULL, &r);
-  SDL_FreeSurface(s);
-  SDL_DestroyTexture(t);
+  const char *settings_names[] = {"Work Duration (min)",
+                                  "Break Duration (min)",
+                                  "Long Break Duration (min)",
+                                  "Sessions until Long Break",
+                                  "Sound Enabled",
+                                  "Auto-start Next Session",
+                                  "Opacity (0-100)",
+                                  "Volume (0-128)"};
 
-  // Break
-  sprintf(buf, "Break: %d min (Use Left/Right)", timer->config.break_min);
-  s = TTF_RenderText_Blended(font, buf, white);
-  t = SDL_CreateTextureFromSurface(timer->settings_ren, s);
-  r = (SDL_Rect){20, 60, s->w, s->h};
-  SDL_RenderCopy(timer->settings_ren, t, NULL, &r);
-  SDL_FreeSurface(s);
-  SDL_DestroyTexture(t);
+  int num_settings = 8;
 
-  // Sound
-  sprintf(buf, "Sound: %s (Use Enter)", timer->config.sound_on ? "ON" : "OFF");
-  s = TTF_RenderText_Blended(font, buf, white);
-  t = SDL_CreateTextureFromSurface(timer->settings_ren, s);
-  r = (SDL_Rect){20, 100, s->w, s->h};
-  SDL_RenderCopy(timer->settings_ren, t, NULL, &r);
-  SDL_FreeSurface(s);
-  SDL_DestroyTexture(t);
+  for (int i = 0; i < num_settings; i++) {
+    SDL_Color color = (timer->selected_setting == i) ? yellow : white;
+    switch (i) {
+    case 0:
+      sprintf(buf, "%s: %d", settings_names[i], timer->config.work_min);
+      break;
+    case 1:
+      sprintf(buf, "%s: %d", settings_names[i], timer->config.break_min);
+      break;
+    case 2:
+      sprintf(buf, "%s: %d", settings_names[i], timer->config.long_break_min);
+      break;
+    case 3:
+      sprintf(buf, "%s: %d", settings_names[i],
+              timer->config.sessions_until_long);
+      break;
+    case 4:
+      sprintf(buf, "%s: %s", settings_names[i],
+              timer->config.sound_on ? "ON" : "OFF");
+      break;
+    case 5:
+      sprintf(buf, "%s: %s", settings_names[i],
+              timer->config.auto_start ? "YES" : "NO");
+      break;
+    case 6:
+      sprintf(buf, "%s: %d%%", settings_names[i], timer->config.opacity);
+      break;
+    case 7:
+      sprintf(buf, "%s: %d", settings_names[i], timer->config.volume);
+      break;
+    }
+
+    SDL_Surface *s = TTF_RenderText_Blended(font, buf, color);
+    SDL_Texture *t = SDL_CreateTextureFromSurface(timer->settings_ren, s);
+    SDL_Rect r = {20, 20 + i * 40, s->w, s->h};
+    SDL_RenderCopy(timer->settings_ren, t, NULL, &r);
+    SDL_FreeSurface(s);
+    SDL_DestroyTexture(t);
+  }
 
   SDL_RenderPresent(timer->settings_ren);
+}
+
+void open_streak_window(Timer *timer, TTF_Font *font) {
+  if (timer->streak_win)
+    return;
+  timer->streak_win =
+      SDL_CreateWindow("Streak Counter", SDL_WINDOWPOS_CENTERED,
+                       SDL_WINDOWPOS_CENTERED, 300, 200, SDL_WINDOW_SHOWN);
+  timer->streak_ren =
+      SDL_CreateRenderer(timer->streak_win, -1, SDL_RENDERER_ACCELERATED);
+}
+
+void render_streak(Timer *timer, TTF_Font *font) {
+  if (!timer->streak_win)
+    return;
+  SDL_SetRenderDrawColor(timer->streak_ren, 20, 22, 28, 255);
+  SDL_RenderClear(timer->streak_ren);
+  SDL_Color white = {255, 255, 255, 255};
+  char buf[128];
+
+  sprintf(buf, "Daily Sessions: %d", timer->streak.daily_sessions);
+  SDL_Surface *s1 = TTF_RenderText_Blended(font, buf, white);
+  SDL_Texture *t1 = SDL_CreateTextureFromSurface(timer->streak_ren, s1);
+  SDL_Rect r1 = {20, 20, s1->w, s1->h};
+  SDL_RenderCopy(timer->streak_ren, t1, NULL, &r1);
+  SDL_FreeSurface(s1);
+  SDL_DestroyTexture(t1);
+
+  sprintf(buf, "Consecutive Days: %d", timer->streak.consecutive_days);
+  SDL_Surface *s2 = TTF_RenderText_Blended(font, buf, white);
+  SDL_Texture *t2 = SDL_CreateTextureFromSurface(timer->streak_ren, s2);
+  SDL_Rect r2 = {20, 60, s2->w, s2->h};
+  SDL_RenderCopy(timer->streak_ren, t2, NULL, &r2);
+  SDL_FreeSurface(s2);
+  SDL_DestroyTexture(t2);
+
+  sprintf(buf, "Last Active: %s", timer->streak.last_date);
+  SDL_Surface *s3 = TTF_RenderText_Blended(font, buf, white);
+  SDL_Texture *t3 = SDL_CreateTextureFromSurface(timer->streak_ren, s3);
+  SDL_Rect r3 = {20, 100, s3->w, s3->h};
+  SDL_RenderCopy(timer->streak_ren, t3, NULL, &r3);
+  SDL_FreeSurface(s3);
+  SDL_DestroyTexture(t3);
+
+  SDL_RenderPresent(timer->streak_ren);
 }
 
 void snap_to_corner(SDL_Window *window) {
@@ -408,6 +581,7 @@ int main(int argc, char *argv[]) {
   Timer timer = {w};
   timer.last_frame_time = SDL_GetTicks();
   load_config(&timer.config);
+  load_streak(&timer.streak);
   timer.sec_remain = timer.config.work_min * 60.0;
 
   // wimndow
@@ -440,6 +614,7 @@ int main(int argc, char *argv[]) {
   }
   SDL_GL_MakeCurrent(window, context);
   SDL_GL_SetSwapInterval(1); // VSYNCCCCCCC!!!
+  SDL_SetWindowOpacity(window, timer.config.opacity / 100.0f);
 
   glEnable(GL_BLEND);
   glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
@@ -478,6 +653,12 @@ int main(int argc, char *argv[]) {
           timer.settings_win = NULL;
           timer.settings_ren = NULL;
           save_config(&timer.config);
+        } else if (timer.streak_win &&
+                   e.window.windowID == SDL_GetWindowID(timer.streak_win)) {
+          SDL_DestroyRenderer(timer.streak_ren);
+          SDL_DestroyWindow(timer.streak_win);
+          timer.streak_win = NULL;
+          timer.streak_ren = NULL;
         } else {
           running = false;
         }
@@ -502,31 +683,67 @@ int main(int argc, char *argv[]) {
             timer.settings_ren = NULL;
             save_config(&timer.config);
           }
+        } else if (e.key.keysym.sym == SDLK_o) {
+          if (!timer.streak_win)
+            open_streak_window(&timer, font_small);
+          else {
+            SDL_DestroyRenderer(timer.streak_ren);
+            SDL_DestroyWindow(timer.streak_win);
+            timer.streak_win = NULL;
+            timer.streak_ren = NULL;
+          }
         }
 
         if (timer.settings_win) {
-          if (e.key.keysym.sym == SDLK_UP)
-            timer.config.work_min++;
-          if (e.key.keysym.sym == SDLK_DOWN && timer.config.work_min > 1)
-            timer.config.work_min--;
-          if (e.key.keysym.sym == SDLK_RIGHT)
-            timer.config.break_min++;
-          if (e.key.keysym.sym == SDLK_LEFT && timer.config.break_min > 1)
-            timer.config.break_min--;
-          if (e.key.keysym.sym == SDLK_RETURN ||
-              e.key.keysym.sym == SDLK_KP_ENTER) {
-            timer.config.sound_on = !timer.config.sound_on;
-            if (timer.config.sound_on)
-              Mix_ResumeMusic();
-            else
-              Mix_HaltMusic();
+          if (e.key.keysym.sym == SDLK_UP) {
+            timer.selected_setting = (timer.selected_setting - 1 + 8) % 8;
+          } else if (e.key.keysym.sym == SDLK_DOWN) {
+            timer.selected_setting = (timer.selected_setting + 1) % 8;
+          } else if (e.key.keysym.sym == SDLK_LEFT ||
+                     e.key.keysym.sym == SDLK_RIGHT) {
+            int dir = (e.key.keysym.sym == SDLK_RIGHT) ? 1 : -1;
+            switch (timer.selected_setting) {
+            case 0:
+              timer.config.work_min = fmax(1, timer.config.work_min + dir);
+              break;
+            case 1:
+              timer.config.break_min = fmax(1, timer.config.break_min + dir);
+              break;
+            case 2:
+              timer.config.long_break_min =
+                  fmax(1, timer.config.long_break_min + dir);
+              break;
+            case 3:
+              timer.config.sessions_until_long =
+                  fmax(1, timer.config.sessions_until_long + dir);
+              break;
+            case 4:
+              timer.config.sound_on = !timer.config.sound_on;
+              break;
+            case 5:
+              timer.config.auto_start = !timer.config.auto_start;
+              break;
+            case 6:
+              timer.config.opacity =
+                  fmax(10, fmin(100, timer.config.opacity + dir * 5));
+              break;
+            case 7:
+              timer.config.volume =
+                  fmax(0, fmin(128, timer.config.volume + dir * 8));
+              break;
+            }
+            if (timer.selected_setting == 6) {
+              SDL_SetWindowOpacity(window, timer.config.opacity / 100.0f);
+            }
+            if (timer.selected_setting == 4 || timer.selected_setting == 7) {
+              Mix_VolumeMusic(timer.config.volume);
+              if (timer.config.sound_on)
+                Mix_ResumeMusic();
+              else
+                Mix_HaltMusic();
+            }
+            save_config(&timer.config);
           }
-
-          // Auto update timer if changed
-          timer.sec_remain = timer.config.work_min * 60.0;
-          timer.elapsed_work = 0;
-          timer.elapsed_break = 0;
-          timer.state = w;
         }
       }
       if (e.type == SDL_WINDOWEVENT &&
@@ -576,13 +793,24 @@ int main(int argc, char *argv[]) {
 
       if (timer.sec_remain <= 0) {
         if (timer.state == w) {
-          timer.state = b;
-          timer.sec_remain = timer.config.break_min * 60.0;
+          timer.session_count++;
+          update_streak(&timer.streak);
+          if (timer.session_count % timer.config.sessions_until_long == 0) {
+            timer.state = b;
+            timer.sec_remain = timer.config.long_break_min * 60.0;
+          } else {
+            timer.state = b;
+            timer.sec_remain = timer.config.break_min * 60.0;
+          }
         } else {
           timer.state = w;
           timer.sec_remain = timer.config.work_min * 60.0;
           timer.elapsed_work = 0;
           timer.elapsed_break = 0;
+        }
+        if (!timer.config.auto_start) {
+          timer.paused = true;
+          Mix_PauseMusic();
         }
       }
     } else {
@@ -637,6 +865,9 @@ int main(int argc, char *argv[]) {
     if (timer.settings_win) {
       render_settings(&timer, font_small);
     }
+    if (timer.streak_win) {
+      render_streak(&timer, font_small);
+    }
     float progress = (float)(timer.sec_remain / total);
     if (progress < 0)
       progress = 0;
@@ -661,9 +892,14 @@ int main(int argc, char *argv[]) {
     draw_cached_text(&time_cache, ww / 2.0f, wh / 2.0f - 10, true, alpha);
 
     // label
-    const char *label =
-        timer.paused ? "PAUSED"
-                     : (timer.state == w ? "GOOD BOY :3" : "BREAK! ENJOY");
+    char label[64];
+    if (timer.paused) {
+      strcpy(label, "PAUSED");
+    } else if (timer.state == w) {
+      sprintf(label, "WORK #%d", timer.session_count + 1);
+    } else {
+      strcpy(label, "BREAK! ENJOY");
+    }
     SDL_Color gray = {191, 199, 230, 230};
     update_cached_text(font_small, &label_cache, label, gray);
     draw_cached_text(&label_cache, ww / 2.0f, wh / 2.0f + 25, true, 1.0f);

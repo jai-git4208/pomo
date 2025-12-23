@@ -34,11 +34,26 @@ typedef enum { STATE_WORK, STATE_BREAK } TimerState;
 @property(nonatomic, assign) double elapsedBreak;
 @property(nonatomic, assign) int workMin;
 @property(nonatomic, assign) int breakMin;
+@property(nonatomic, assign) int longBreakMin;
+@property(nonatomic, assign) int sessionsUntilLong;
 @property(nonatomic, assign) BOOL soundOn;
+@property(nonatomic, assign) BOOL autoStart;
+@property(nonatomic, assign) int opacity;
+@property(nonatomic, assign) int volume;
+@property(nonatomic, assign) int sessionCount;
+@property(nonatomic, strong) NSString *lastDate;
+@property(nonatomic, assign) int dailySessions;
+@property(nonatomic, assign) int consecutiveDays;
+@property(nonatomic, strong) NSWindow *streakWindow;
 @property(nonatomic, strong) NSWindow *settingsWindow;
 @property(nonatomic, strong) NSTextField *workField;
 @property(nonatomic, strong) NSTextField *breakField;
+@property(nonatomic, strong) NSTextField *longBreakField;
+@property(nonatomic, strong) NSTextField *sessionsField;
 @property(nonatomic, strong) NSButton *soundCheck;
+@property(nonatomic, strong) NSButton *autoStartCheck;
+@property(nonatomic, strong) NSSlider *opacitySlider;
+@property(nonatomic, strong) NSSlider *volumeSlider;
 
 - (void)handleKeyDown:(NSEvent *)event;
 - (void)snapToNearestCorner;
@@ -46,7 +61,11 @@ typedef enum { STATE_WORK, STATE_BREAK } TimerState;
 - (void)saveConfig;
 - (void)resetTimer;
 - (void)showSettings;
+- (void)showStreak;
 - (void)applySettings;
+- (void)loadStreak;
+- (void)saveStreak;
+- (void)updateStreak;
 @end
 
 @implementation PomoView
@@ -97,7 +116,13 @@ typedef enum { STATE_WORK, STATE_BREAK } TimerState;
   NSString *labelStr =
       self.paused
           ? @"PAUSED"
-          : (self.state == STATE_WORK ? @"GOOD BOY :3" : @"BREAK! ENJOY");
+          : (self.state == STATE_WORK
+                 ? [NSString
+                       stringWithFormat:@"WORK #%d",
+                                        [(PomoAppDelegate *)[NSApp delegate]
+                                            sessionCount] +
+                                            1]
+                 : @"BREAK! ENJOY");
 
   NSMutableParagraphStyle *style = [[NSMutableParagraphStyle alloc] init];
   style.alignment = NSTextAlignmentCenter;
@@ -172,6 +197,7 @@ typedef enum { STATE_WORK, STATE_BREAK } TimerState;
 
   self.pomoView = [[PomoView alloc] initWithFrame:frame];
   [self loadConfig];
+  [self loadStreak];
   self.pomoView.workMin = self.workMin;
   self.pomoView.breakMin = self.breakMin;
   self.pomoView.secRemaining = self.workMin * 60.0;
@@ -204,6 +230,7 @@ typedef enum { STATE_WORK, STATE_BREAK } TimerState;
                                                               error:&error];
     if (self.audioPlayer) {
       self.audioPlayer.numberOfLoops = -1;
+      self.audioPlayer.volume = self.volume / 128.0;
       [self.audioPlayer prepareToPlay];
       [self.audioPlayer play];
     } else {
@@ -271,13 +298,24 @@ typedef enum { STATE_WORK, STATE_BREAK } TimerState;
 
     if (self.pomoView.secRemaining <= 0) {
       if (self.pomoView.state == STATE_WORK) {
-        self.pomoView.state = STATE_BREAK;
-        self.pomoView.secRemaining = self.breakMin * 60.0;
+        self.sessionCount++;
+        [self updateStreak];
+        if (self.sessionCount % self.sessionsUntilLong == 0) {
+          self.pomoView.state = STATE_BREAK;
+          self.pomoView.secRemaining = self.longBreakMin * 60.0;
+        } else {
+          self.pomoView.state = STATE_BREAK;
+          self.pomoView.secRemaining = self.breakMin * 60.0;
+        }
       } else {
         self.pomoView.state = STATE_WORK;
         self.pomoView.secRemaining = self.workMin * 60.0;
         self.elapsedWork = 0;
         self.elapsedBreak = 0;
+      }
+      if (!self.autoStart) {
+        self.pomoView.paused = YES;
+        [self.audioPlayer pause];
       }
     }
   } else {
@@ -343,7 +381,12 @@ typedef enum { STATE_WORK, STATE_BREAK } TimerState;
 - (void)loadConfig {
   self.workMin = 25;
   self.breakMin = 5;
+  self.longBreakMin = 15;
+  self.sessionsUntilLong = 4;
   self.soundOn = YES;
+  self.autoStart = NO;
+  self.opacity = 100;
+  self.volume = 128;
 
   NSString *path = @"pomo.cfg";
   NSString *content = [NSString stringWithContentsOfFile:path
@@ -360,8 +403,18 @@ typedef enum { STATE_WORK, STATE_BREAK } TimerState;
           self.workMin = val;
         else if ([key isEqualToString:@"break_time"])
           self.breakMin = val;
+        else if ([key isEqualToString:@"long_break_time"])
+          self.longBreakMin = val;
+        else if ([key isEqualToString:@"sessions_until_long"])
+          self.sessionsUntilLong = val;
         else if ([key isEqualToString:@"sound"])
           self.soundOn = (val != 0);
+        else if ([key isEqualToString:@"auto_start"])
+          self.autoStart = (val != 0);
+        else if ([key isEqualToString:@"opacity"])
+          self.opacity = val;
+        else if ([key isEqualToString:@"volume"])
+          self.volume = val;
         else if ([key isEqualToString:@"x"]) {
           NSRect frame = self.window.frame;
           frame.origin.x = val;
@@ -374,19 +427,88 @@ typedef enum { STATE_WORK, STATE_BREAK } TimerState;
       }
     }
   }
+  [self.window setAlphaValue:self.opacity / 100.0];
+  if (self.audioPlayer) {
+    self.audioPlayer.volume = self.volume / 128.0;
+  }
 }
 
 - (void)saveConfig {
   NSMutableString *s = [NSMutableString string];
   [s appendFormat:@"work_time=%d\n", self.workMin];
   [s appendFormat:@"break_time=%d\n", self.breakMin];
+  [s appendFormat:@"long_break_time=%d\n", self.longBreakMin];
+  [s appendFormat:@"sessions_until_long=%d\n", self.sessionsUntilLong];
   [s appendFormat:@"sound=%d\n", self.soundOn ? 1 : 0];
+  [s appendFormat:@"auto_start=%d\n", self.autoStart ? 1 : 0];
+  [s appendFormat:@"opacity=%d\n", self.opacity];
+  [s appendFormat:@"volume=%d\n", self.volume];
   [s appendFormat:@"x=%d\n", (int)self.window.frame.origin.x];
   [s appendFormat:@"y=%d\n", (int)self.window.frame.origin.y];
   [s writeToFile:@"pomo.cfg"
       atomically:YES
         encoding:NSUTF8StringEncoding
            error:nil];
+}
+
+- (void)loadStreak {
+  self.lastDate = @"0000-00-00";
+  self.dailySessions = 0;
+  self.consecutiveDays = 0;
+
+  NSString *content = [NSString stringWithContentsOfFile:@"streak.txt"
+                                                encoding:NSUTF8StringEncoding
+                                                   error:nil];
+  if (content) {
+    NSArray *lines = [content componentsSeparatedByString:@"\n"];
+    for (NSString *line in lines) {
+      NSArray *parts = [line componentsSeparatedByString:@"="];
+      if (parts.count == 2) {
+        if ([parts[0] isEqualToString:@"last_date"])
+          self.lastDate = parts[1];
+        else if ([parts[0] isEqualToString:@"daily_sessions"])
+          self.dailySessions = [parts[1] intValue];
+        else if ([parts[0] isEqualToString:@"consecutive_days"])
+          self.consecutiveDays = [parts[1] intValue];
+      }
+    }
+  }
+}
+
+- (void)saveStreak {
+  NSString *s =
+      [NSString stringWithFormat:
+                    @"last_date=%@\ndaily_sessions=%d\nconsecutive_days=%d\n",
+                    self.lastDate, self.dailySessions, self.consecutiveDays];
+  [s writeToFile:@"streak.txt"
+      atomically:YES
+        encoding:NSUTF8StringEncoding
+           error:nil];
+}
+
+- (void)updateStreak {
+  NSDateFormatter *df = [[NSDateFormatter alloc] init];
+  [df setDateFormat:@"yyyy-MM-dd"];
+  NSString *today = [df stringFromDate:[NSDate date]];
+
+  if ([self.lastDate isEqualToString:today]) {
+    self.dailySessions++;
+  } else {
+    NSDate *lastDateObj = [df dateFromString:self.lastDate];
+    if (lastDateObj) {
+      NSTimeInterval diff = [[NSDate date] timeIntervalSinceDate:lastDateObj];
+      if (diff <= 86400 * 1.5) {
+        self.consecutiveDays++;
+      } else {
+        self.consecutiveDays = 1;
+      }
+    } else {
+      self.consecutiveDays = 1;
+    }
+    self.dailySessions = 1;
+    self.lastDate = today;
+  }
+  [self saveStreak];
 }
 
 - (void)resetTimer {
@@ -415,6 +537,8 @@ typedef enum { STATE_WORK, STATE_BREAK } TimerState;
     [self resetTimer];
   } else if (event.keyCode == 1) { // 's'
     [self showSettings];
+  } else if (event.keyCode == 31) { // 'o'
+    [self showStreak];
   } else if (event.keyCode == 53) { // Escape
     [NSApp terminate:nil];
   }
@@ -426,81 +550,198 @@ typedef enum { STATE_WORK, STATE_BREAK } TimerState;
     return;
   }
 
-  NSRect frame = NSMakeRect(0, 0, 250, 180);
+  NSRect frame = NSMakeRect(0, 0, 300, 350);
   self.settingsWindow = [[NSWindow alloc]
       initWithContentRect:frame
                 styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable
                   backing:NSBackingStoreBuffered
                     defer:NO];
-  [self.settingsWindow setTitle:@"Settings"];
+  [self.settingsWindow setTitle:@"Advanced Settings"];
   [self.settingsWindow center];
 
-  NSView *contentView = [[NSView alloc] initWithFrame:frame];
-  [self.settingsWindow setContentView:contentView];
+  NSView *cv = [[NSView alloc] initWithFrame:frame];
+  [self.settingsWindow setContentView:cv];
 
-  // Work Label
-  NSTextField *workLabel = [NSTextField labelWithString:@"Work Time (min):"];
-  workLabel.frame = NSMakeRect(20, 130, 110, 20);
-  [contentView addSubview:workLabel];
-
+  CGFloat y = 310;
+  // Work
+  [[NSTextField labelWithString:@"Work (min):"]
+      setFrame:NSMakeRect(20, y, 120, 20)];
+  [cv addSubview:[cv.subviews lastObject]];
   self.workField = [NSTextField
       textFieldWithString:[NSString stringWithFormat:@"%d", self.workMin]];
-  self.workField.frame = NSMakeRect(140, 130, 60, 20);
-  [contentView addSubview:self.workField];
+  self.workField.frame = NSMakeRect(150, y, 100, 20);
+  [cv addSubview:self.workField];
+  y -= 30;
 
-  // Break Label
-  NSTextField *breakLabel = [NSTextField labelWithString:@"Break Time (min):"];
-  breakLabel.frame = NSMakeRect(20, 100, 110, 20);
-  [contentView addSubview:breakLabel];
-
+  // Break
+  [[NSTextField labelWithString:@"Break (min):"]
+      setFrame:NSMakeRect(20, y, 120, 20)];
+  [cv addSubview:[cv.subviews lastObject]];
   self.breakField = [NSTextField
       textFieldWithString:[NSString stringWithFormat:@"%d", self.breakMin]];
-  self.breakField.frame = NSMakeRect(140, 100, 60, 20);
-  [contentView addSubview:self.breakField];
+  self.breakField.frame = NSMakeRect(150, y, 100, 20);
+  [cv addSubview:self.breakField];
+  y -= 30;
 
-  // Sound Checkbox
-  self.soundCheck = [NSButton checkboxWithTitle:@"Sound On"
+  // Long Break
+  [[NSTextField labelWithString:@"Long Break (min):"]
+      setFrame:NSMakeRect(20, y, 120, 20)];
+  [cv addSubview:[cv.subviews lastObject]];
+  self.longBreakField = [NSTextField
+      textFieldWithString:[NSString stringWithFormat:@"%d", self.longBreakMin]];
+  self.longBreakField.frame = NSMakeRect(150, y, 100, 20);
+  [cv addSubview:self.longBreakField];
+  y -= 30;
+
+  // Sessions
+  [[NSTextField labelWithString:@"Sessions until Long:"]
+      setFrame:NSMakeRect(20, y, 120, 20)];
+  [cv addSubview:[cv.subviews lastObject]];
+  self.sessionsField = [NSTextField
+      textFieldWithString:[NSString
+                              stringWithFormat:@"%d", self.sessionsUntilLong]];
+  self.sessionsField.frame = NSMakeRect(150, y, 100, 20);
+  [cv addSubview:self.sessionsField];
+  y -= 40;
+
+  // Sound & AutoStart
+  self.soundCheck = [NSButton checkboxWithTitle:@"Sound Enabled"
                                          target:nil
                                          action:nil];
-  self.soundCheck.frame = NSMakeRect(20, 70, 100, 20);
+  self.soundCheck.frame = NSMakeRect(20, y, 130, 20);
   self.soundCheck.state =
       self.soundOn ? NSControlStateValueOn : NSControlStateValueOff;
-  [contentView addSubview:self.soundCheck];
+  [cv addSubview:self.soundCheck];
 
-  // Apply Button
-  NSButton *applyBtn = [NSButton buttonWithTitle:@"Apply"
+  self.autoStartCheck = [NSButton checkboxWithTitle:@"Auto-start"
+                                             target:nil
+                                             action:nil];
+  self.autoStartCheck.frame = NSMakeRect(150, y, 130, 20);
+  self.autoStartCheck.state =
+      self.autoStart ? NSControlStateValueOn : NSControlStateValueOff;
+  [cv addSubview:self.autoStartCheck];
+  y -= 40;
+
+  // Opacity
+  [[NSTextField labelWithString:@"Opacity:"]
+      setFrame:NSMakeRect(20, y, 60, 20)];
+  [cv addSubview:[cv.subviews lastObject]];
+  self.opacitySlider = [NSSlider sliderWithValue:self.opacity
+                                        minValue:10
+                                        maxValue:100
+                                          target:nil
+                                          action:nil];
+  self.opacitySlider.frame = NSMakeRect(80, y, 180, 20);
+  [cv addSubview:self.opacitySlider];
+  y -= 30;
+
+  // Volume
+  [[NSTextField labelWithString:@"Volume:"] setFrame:NSMakeRect(20, y, 60, 20)];
+  [cv addSubview:[cv.subviews lastObject]];
+  self.volumeSlider = [NSSlider sliderWithValue:self.volume
+                                       minValue:0
+                                       maxValue:128
+                                         target:nil
+                                         action:nil];
+  self.volumeSlider.frame = NSMakeRect(80, y, 180, 20);
+  [cv addSubview:self.volumeSlider];
+  y -= 50;
+
+  // Apply
+  NSButton *applyBtn = [NSButton buttonWithTitle:@"Apply Settings"
                                           target:self
                                           action:@selector(applySettings)];
-  applyBtn.frame = NSMakeRect(75, 20, 100, 30);
-  [contentView addSubview:applyBtn];
+  applyBtn.frame = NSMakeRect(75, y, 150, 30);
+  [cv addSubview:applyBtn];
 
   [self.settingsWindow makeKeyAndOrderFront:nil];
 }
 
 - (void)applySettings {
-  int newWork = [self.workField intValue];
-  int newBreak = [self.breakField intValue];
+  int newW = [self.workField intValue];
+  int newB = [self.breakField intValue];
+  int newLB = [self.longBreakField intValue];
+  int newS = [self.sessionsField intValue];
   BOOL newSound = (self.soundCheck.state == NSControlStateValueOn);
+  BOOL newAuto = (self.autoStartCheck.state == NSControlStateValueOn);
+  int newOp = [self.opacitySlider intValue];
+  int newVol = [self.volumeSlider intValue];
 
-  if (newWork != self.workMin || newBreak != self.breakMin ||
-      newSound != self.soundOn) {
-    self.workMin = newWork;
-    self.breakMin = newBreak;
-    self.soundOn = newSound;
-    self.pomoView.workMin = self.workMin;
-    self.pomoView.breakMin = self.breakMin;
+  self.workMin = newW;
+  self.breakMin = newB;
+  self.longBreakMin = newLB;
+  self.sessionsUntilLong = newS;
+  self.soundOn = newSound;
+  self.autoStart = newAuto;
+  self.opacity = newOp;
+  self.volume = newVol;
 
-    if (newSound) {
+  self.pomoView.workMin = self.workMin;
+  self.pomoView.breakMin = self.breakMin;
+  [self.window setAlphaValue:self.opacity / 100.0];
+  if (self.audioPlayer) {
+    self.audioPlayer.volume = self.volume / 128.0;
+    if (self.soundOn)
       [self.audioPlayer play];
-    } else {
+    else
       [self.audioPlayer stop];
-    }
-
-    [self resetTimer];
-    [self saveConfig];
   }
+
+  [self resetTimer];
+  [self saveConfig];
   [self.settingsWindow close];
   self.settingsWindow = nil;
+}
+
+- (void)showStreak {
+  if (self.streakWindow) {
+    [self.streakWindow makeKeyAndOrderFront:nil];
+    return;
+  }
+
+  NSRect frame = NSMakeRect(0, 0, 250, 150);
+  self.streakWindow = [[NSWindow alloc]
+      initWithContentRect:frame
+                styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable
+                  backing:NSBackingStoreBuffered
+                    defer:NO];
+  [self.streakWindow setTitle:@"Streak Counter"];
+  [self.streakWindow center];
+
+  NSView *cv = [[NSView alloc] initWithFrame:frame];
+  [self.streakWindow setContentView:cv];
+
+  CGFloat y = 110;
+  NSTextField *dailyLabel = [NSTextField
+      labelWithString:[NSString stringWithFormat:@"Daily Sessions: %d",
+                                                 self.dailySessions]];
+  dailyLabel.frame = NSMakeRect(20, y, 210, 20);
+  [cv addSubview:dailyLabel];
+  y -= 30;
+
+  NSTextField *consecutiveLabel = [NSTextField
+      labelWithString:[NSString stringWithFormat:@"Consecutive Days: %d",
+                                                 self.consecutiveDays]];
+  consecutiveLabel.frame = NSMakeRect(20, y, 210, 20);
+  [cv addSubview:consecutiveLabel];
+  y -= 30;
+
+  NSTextField *lastLabel = [NSTextField
+      labelWithString:[NSString
+                          stringWithFormat:@"Last Active: %@", self.lastDate]];
+  lastLabel.frame = NSMakeRect(20, y, 210, 20);
+  [cv addSubview:lastLabel];
+
+  [self.streakWindow makeKeyAndOrderFront:nil];
+
+  // Listen for window close to nil out property
+  [[NSNotificationCenter defaultCenter]
+      addObserverForName:NSWindowWillCloseNotification
+                  object:self.streakWindow
+                   queue:[NSOperationQueue mainQueue]
+              usingBlock:^(NSNotification *note) {
+                self.streakWindow = nil;
+              }];
 }
 
 @end
