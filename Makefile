@@ -7,11 +7,11 @@ TARGET_MAC  = pomopomo_mac
 SRC_SDL = main.c
 SRC_MAC = main.m
 
-CFLAGS_SDL = $(shell pkg-config --cflags sdl2 SDL2_ttf)
-LIBS_SDL   = $(shell pkg-config --libs sdl2 SDL2_ttf) -framework OpenGL
+CFLAGS_SDL = $(shell pkg-config --cflags sdl2 SDL2_ttf SDL2_mixer)
+LIBS_SDL   = $(shell pkg-config --libs sdl2 SDL2_ttf SDL2_mixer) -framework OpenGL
 
 CFLAGS_MAC =
-LIBS_MAC   = -framework Cocoa -framework QuartzCore -framework Metal -framework OpenGL
+LIBS_MAC   = -framework Cocoa -framework QuartzCore -framework Metal -framework OpenGL -framework ApplicationServices -framework AVFoundation
 
 $(TARGET): $(SRC_SDL)
 	$(CC) $(CFLAGS_SDL) -o $(TARGET) $(SRC_SDL) $(LIBS_SDL)

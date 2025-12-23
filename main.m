@@ -15,21 +15,38 @@ typedef enum { STATE_WORK, STATE_BREAK } TimerState;
 @property(nonatomic, assign) double secRemaining;
 @property(nonatomic, assign) TimerState state;
 @property(nonatomic, assign) BOOL paused;
+@property(nonatomic, assign) int workMin;
+@property(nonatomic, assign) int breakMin;
 @end
 
 @interface PomoWindow : NSWindow
 @end
 
 @interface PomoAppDelegate : NSObject <NSApplicationDelegate>
-@property(nonatomic, strong) NSWindow *window;
+@property(nonatomic, strong) PomoWindow *window;
 @property(nonatomic, strong) PomoView *pomoView;
 @property(nonatomic, strong) NSTimer *timer;
 @property(nonatomic, assign) double pauseDuration;
 @property(nonatomic, assign) NSPoint baseOrigin;
 @property(nonatomic, assign) BOOL isShaking;
 @property(nonatomic, strong) AVAudioPlayer *audioPlayer;
+@property(nonatomic, assign) double elapsedWork;
+@property(nonatomic, assign) double elapsedBreak;
+@property(nonatomic, assign) int workMin;
+@property(nonatomic, assign) int breakMin;
+@property(nonatomic, assign) BOOL soundOn;
+@property(nonatomic, strong) NSWindow *settingsWindow;
+@property(nonatomic, strong) NSTextField *workField;
+@property(nonatomic, strong) NSTextField *breakField;
+@property(nonatomic, strong) NSButton *soundCheck;
+
 - (void)handleKeyDown:(NSEvent *)event;
 - (void)snapToNearestCorner;
+- (void)loadConfig;
+- (void)saveConfig;
+- (void)resetTimer;
+- (void)showSettings;
+- (void)applySettings;
 @end
 
 @implementation PomoView
@@ -55,7 +72,8 @@ typedef enum { STATE_WORK, STATE_BREAK } TimerState;
   CGContextStrokePath(ctx);
 
   // Draw progress ring
-  double total = (self.state == STATE_WORK) ? WORK_DURATION : BREAK_DURATION;
+  double total =
+      (self.state == STATE_WORK) ? self.workMin * 60.0 : self.breakMin * 60.0;
   double prog = fmax(0.0, self.secRemaining / total);
   if (prog > 0) {
     if (self.state == STATE_WORK) {
@@ -153,7 +171,10 @@ typedef enum { STATE_WORK, STATE_BREAK } TimerState;
   [self.window center];
 
   self.pomoView = [[PomoView alloc] initWithFrame:frame];
-  self.pomoView.secRemaining = WORK_DURATION;
+  [self loadConfig];
+  self.pomoView.workMin = self.workMin;
+  self.pomoView.breakMin = self.breakMin;
+  self.pomoView.secRemaining = self.workMin * 60.0;
   self.pomoView.state = STATE_WORK;
   self.pomoView.paused = NO;
 
@@ -168,31 +189,50 @@ typedef enum { STATE_WORK, STATE_BREAK } TimerState;
                                                repeats:YES];
   [[NSRunLoop mainRunLoop] addTimer:self.timer forMode:NSRunLoopCommonModes];
 
-  NSURL *audioURL = [[NSBundle mainBundle] URLForResource:@"res/timer"
-                                            withExtension:@"mp3"];
-  if (!audioURL) {
-    // Fallback if not in bundle (which it won't be since we are a simple
-    // executable)
-    NSString *path = [[[[NSProcessInfo processInfo] arguments] objectAtIndex:0]
-        stringByDeletingLastPathComponent];
-    path = [path stringByAppendingPathComponent:@"res/timer.mp3"];
-    audioURL = [NSURL fileURLWithPath:path];
-  }
+  if (self.soundOn) {
+    NSURL *audioURL = [[NSBundle mainBundle] URLForResource:@"res/timer"
+                                              withExtension:@"mp3"];
+    if (!audioURL) {
+      NSString *path = [[[[NSProcessInfo processInfo] arguments]
+          objectAtIndex:0] stringByDeletingLastPathComponent];
+      path = [path stringByAppendingPathComponent:@"res/timer.mp3"];
+      audioURL = [NSURL fileURLWithPath:path];
+    }
 
-  NSError *error = nil;
-  self.audioPlayer = [[AVAudioPlayer alloc] initWithContentsOfURL:audioURL
-                                                            error:&error];
-  if (self.audioPlayer) {
-    self.audioPlayer.numberOfLoops = -1;
-    [self.audioPlayer prepareToPlay];
-    [self.audioPlayer play];
-  } else {
-    NSLog(@"Failed to load audio: %@", error);
+    NSError *error = nil;
+    self.audioPlayer = [[AVAudioPlayer alloc] initWithContentsOfURL:audioURL
+                                                              error:&error];
+    if (self.audioPlayer) {
+      self.audioPlayer.numberOfLoops = -1;
+      [self.audioPlayer prepareToPlay];
+      [self.audioPlayer play];
+    } else {
+      NSLog(@"Failed to load audio: %@", error);
+    }
   }
 }
 
 - (void)applicationDidResignActive:(NSNotification *)notification {
   [self snapToNearestCorner];
+}
+
+- (void)applicationDidBecomeActive:(NSNotification *)notification {
+  int oldW = self.workMin;
+  int oldB = self.breakMin;
+  BOOL oldS = self.soundOn;
+  [self loadConfig];
+  self.pomoView.workMin = self.workMin;
+  self.pomoView.breakMin = self.breakMin;
+  if (oldW != self.workMin || oldB != self.breakMin) {
+    [self resetTimer];
+  }
+  if (oldS != self.soundOn) {
+    if (self.soundOn) {
+      [self.audioPlayer play];
+    } else {
+      [self.audioPlayer stop];
+    }
+  }
 }
 
 - (void)tick:(NSTimer *)timer {
@@ -204,32 +244,40 @@ typedef enum { STATE_WORK, STATE_BREAK } TimerState;
       self.isShaking = NO;
     }
     self.pauseDuration = 0;
-    if (self.audioPlayer && !self.audioPlayer.playing) {
+    if (self.audioPlayer && !self.audioPlayer.playing && self.soundOn) {
       [self.audioPlayer play];
     }
 
     // sync audio
-    if (self.audioPlayer) {
-      double elapsed;
+    if (self.audioPlayer && self.soundOn) {
+      double targetPos;
       if (self.pomoView.state == STATE_WORK) {
-        elapsed = WORK_DURATION - self.pomoView.secRemaining;
+        targetPos = fmod(self.elapsedWork, 1500.0);
       } else {
-        elapsed = WORK_DURATION + (BREAK_DURATION - self.pomoView.secRemaining);
+        targetPos = 1500.0 + fmod(self.elapsedBreak, 300.0);
       }
 
-      if (fabs(self.audioPlayer.currentTime - elapsed) > 1.0) {
-        self.audioPlayer.currentTime = elapsed;
+      if (fabs(self.audioPlayer.currentTime - targetPos) > 1.0) {
+        self.audioPlayer.currentTime = targetPos;
       }
     }
 
     self.pomoView.secRemaining -= 1.0 / 60.0;
+    if (self.pomoView.state == STATE_WORK) {
+      self.elapsedWork += 1.0 / 60.0;
+    } else {
+      self.elapsedBreak += 1.0 / 60.0;
+    }
+
     if (self.pomoView.secRemaining <= 0) {
       if (self.pomoView.state == STATE_WORK) {
         self.pomoView.state = STATE_BREAK;
-        self.pomoView.secRemaining = BREAK_DURATION;
+        self.pomoView.secRemaining = self.breakMin * 60.0;
       } else {
         self.pomoView.state = STATE_WORK;
-        self.pomoView.secRemaining = WORK_DURATION;
+        self.pomoView.secRemaining = self.workMin * 60.0;
+        self.elapsedWork = 0;
+        self.elapsedBreak = 0;
       }
     }
   } else {
@@ -288,15 +336,171 @@ typedef enum { STATE_WORK, STATE_BREAK } TimerState;
 
   if (!NSEqualRects(myFrame, snapFrame)) {
     [self.window setFrame:snapFrame display:YES animate:YES];
+    [self saveConfig];
+  }
+}
+
+- (void)loadConfig {
+  self.workMin = 25;
+  self.breakMin = 5;
+  self.soundOn = YES;
+
+  NSString *path = @"pomo.cfg";
+  NSString *content = [NSString stringWithContentsOfFile:path
+                                                encoding:NSUTF8StringEncoding
+                                                   error:nil];
+  if (content) {
+    NSArray *lines = [content componentsSeparatedByString:@"\n"];
+    for (NSString *line in lines) {
+      NSArray *parts = [line componentsSeparatedByString:@"="];
+      if (parts.count == 2) {
+        NSString *key = parts[0];
+        int val = [parts[1] intValue];
+        if ([key isEqualToString:@"work_time"])
+          self.workMin = val;
+        else if ([key isEqualToString:@"break_time"])
+          self.breakMin = val;
+        else if ([key isEqualToString:@"sound"])
+          self.soundOn = (val != 0);
+        else if ([key isEqualToString:@"x"]) {
+          NSRect frame = self.window.frame;
+          frame.origin.x = val;
+          [self.window setFrame:frame display:YES];
+        } else if ([key isEqualToString:@"y"]) {
+          NSRect frame = self.window.frame;
+          frame.origin.y = val;
+          [self.window setFrame:frame display:YES];
+        }
+      }
+    }
+  }
+}
+
+- (void)saveConfig {
+  NSMutableString *s = [NSMutableString string];
+  [s appendFormat:@"work_time=%d\n", self.workMin];
+  [s appendFormat:@"break_time=%d\n", self.breakMin];
+  [s appendFormat:@"sound=%d\n", self.soundOn ? 1 : 0];
+  [s appendFormat:@"x=%d\n", (int)self.window.frame.origin.x];
+  [s appendFormat:@"y=%d\n", (int)self.window.frame.origin.y];
+  [s writeToFile:@"pomo.cfg"
+      atomically:YES
+        encoding:NSUTF8StringEncoding
+           error:nil];
+}
+
+- (void)resetTimer {
+  self.pomoView.state = STATE_WORK;
+  self.pomoView.secRemaining = self.workMin * 60.0;
+  self.pomoView.paused = NO;
+  self.elapsedWork = 0;
+  self.elapsedBreak = 0;
+  self.pauseDuration = 0;
+  if (self.isShaking) {
+    NSRect frame = self.window.frame;
+    frame.origin = self.baseOrigin;
+    [self.window setFrame:frame display:YES animate:NO];
+    self.isShaking = NO;
+  }
+  if (self.audioPlayer && self.soundOn) {
+    self.audioPlayer.currentTime = 0;
+    [self.audioPlayer play];
   }
 }
 
 - (void)handleKeyDown:(NSEvent *)event {
   if (event.keyCode == 49) { // Space
     self.pomoView.paused = !self.pomoView.paused;
+  } else if (event.keyCode == 15) { // 'r'
+    [self resetTimer];
+  } else if (event.keyCode == 1) { // 's'
+    [self showSettings];
   } else if (event.keyCode == 53) { // Escape
     [NSApp terminate:nil];
   }
+}
+
+- (void)showSettings {
+  if (self.settingsWindow) {
+    [self.settingsWindow makeKeyAndOrderFront:nil];
+    return;
+  }
+
+  NSRect frame = NSMakeRect(0, 0, 250, 180);
+  self.settingsWindow = [[NSWindow alloc]
+      initWithContentRect:frame
+                styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable
+                  backing:NSBackingStoreBuffered
+                    defer:NO];
+  [self.settingsWindow setTitle:@"Settings"];
+  [self.settingsWindow center];
+
+  NSView *contentView = [[NSView alloc] initWithFrame:frame];
+  [self.settingsWindow setContentView:contentView];
+
+  // Work Label
+  NSTextField *workLabel = [NSTextField labelWithString:@"Work Time (min):"];
+  workLabel.frame = NSMakeRect(20, 130, 110, 20);
+  [contentView addSubview:workLabel];
+
+  self.workField = [NSTextField
+      textFieldWithString:[NSString stringWithFormat:@"%d", self.workMin]];
+  self.workField.frame = NSMakeRect(140, 130, 60, 20);
+  [contentView addSubview:self.workField];
+
+  // Break Label
+  NSTextField *breakLabel = [NSTextField labelWithString:@"Break Time (min):"];
+  breakLabel.frame = NSMakeRect(20, 100, 110, 20);
+  [contentView addSubview:breakLabel];
+
+  self.breakField = [NSTextField
+      textFieldWithString:[NSString stringWithFormat:@"%d", self.breakMin]];
+  self.breakField.frame = NSMakeRect(140, 100, 60, 20);
+  [contentView addSubview:self.breakField];
+
+  // Sound Checkbox
+  self.soundCheck = [NSButton checkboxWithTitle:@"Sound On"
+                                         target:nil
+                                         action:nil];
+  self.soundCheck.frame = NSMakeRect(20, 70, 100, 20);
+  self.soundCheck.state =
+      self.soundOn ? NSControlStateValueOn : NSControlStateValueOff;
+  [contentView addSubview:self.soundCheck];
+
+  // Apply Button
+  NSButton *applyBtn = [NSButton buttonWithTitle:@"Apply"
+                                          target:self
+                                          action:@selector(applySettings)];
+  applyBtn.frame = NSMakeRect(75, 20, 100, 30);
+  [contentView addSubview:applyBtn];
+
+  [self.settingsWindow makeKeyAndOrderFront:nil];
+}
+
+- (void)applySettings {
+  int newWork = [self.workField intValue];
+  int newBreak = [self.breakField intValue];
+  BOOL newSound = (self.soundCheck.state == NSControlStateValueOn);
+
+  if (newWork != self.workMin || newBreak != self.breakMin ||
+      newSound != self.soundOn) {
+    self.workMin = newWork;
+    self.breakMin = newBreak;
+    self.soundOn = newSound;
+    self.pomoView.workMin = self.workMin;
+    self.pomoView.breakMin = self.breakMin;
+
+    if (newSound) {
+      [self.audioPlayer play];
+    } else {
+      [self.audioPlayer stop];
+    }
+
+    [self resetTimer];
+    [self saveConfig];
+  }
+  [self.settingsWindow close];
+  self.settingsWindow = nil;
 }
 
 @end

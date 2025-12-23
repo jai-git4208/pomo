@@ -1,4 +1,5 @@
 #include <SDL2/SDL.h>
+#include <SDL2/SDL_mixer.h>
 #include <SDL2/SDL_opengl.h>
 #include <SDL2/SDL_ttf.h>
 #include <math.h>
@@ -14,8 +15,16 @@
 #define wh 200
 #define ww 200
 #define FONT_PATH "/System/Library/Fonts/Supplemental/Arial.ttf"
+#define CONFIG_PATH "pomo.cfg"
 
 typedef enum { w, b } State;
+
+typedef struct {
+  int work_min;
+  int break_min;
+  bool sound_on;
+  int x, y;
+} Config;
 
 typedef struct {
   State state;
@@ -25,6 +34,12 @@ typedef struct {
   double pause_duration;
   int base_x, base_y;
   bool is_shaking;
+  Mix_Music *music;
+  double elapsed_work;
+  double elapsed_break;
+  Config config;
+  SDL_Window *settings_win;
+  SDL_Renderer *settings_ren;
 } Timer;
 
 typedef struct {
@@ -79,6 +94,8 @@ void draw_ring_segment(float x, float y, float outerR, float innerR,
 
 void update_cached_text(TTF_Font *font, CachedText *cache, const char *text,
                         SDL_Color color) {
+  if (!font)
+    return;
   if (cache->texture != 0 && strcmp(cache->text, text) == 0 &&
       cache->color.r == color.r && cache->color.g == color.g &&
       cache->color.b == color.b) {
@@ -219,6 +236,114 @@ SDL_HitTestResult drag_hit_test(SDL_Window *window, const SDL_Point *area,
   return SDL_HITTEST_DRAGGABLE;
 }
 
+void save_config(const Config *cfg) {
+  FILE *f = fopen(CONFIG_PATH, "w");
+  if (!f)
+    return;
+  fprintf(f, "work_time=%d\n", cfg->work_min);
+  fprintf(f, "break_time=%d\n", cfg->break_min);
+  fprintf(f, "sound=%d\n", cfg->sound_on ? 1 : 0);
+  fprintf(f, "x=%d\n", cfg->x);
+  fprintf(f, "y=%d\n", cfg->y);
+  fclose(f);
+}
+
+void load_config(Config *cfg) {
+  cfg->work_min = 25;
+  cfg->break_min = 5;
+  cfg->sound_on = true;
+  cfg->x = SDL_WINDOWPOS_CENTERED;
+  cfg->y = SDL_WINDOWPOS_CENTERED;
+
+  FILE *f = fopen(CONFIG_PATH, "r");
+  if (!f) {
+    save_config(cfg);
+    return;
+  }
+  char line[128];
+  while (fgets(line, sizeof(line), f)) {
+    if (sscanf(line, "work_time=%d", &cfg->work_min) == 1)
+      continue;
+    if (sscanf(line, "break_time=%d", &cfg->break_min) == 1)
+      continue;
+    if (sscanf(line, "sound=%d", (int *)&cfg->sound_on) == 1)
+      continue;
+    if (sscanf(line, "x=%d", &cfg->x) == 1)
+      continue;
+    if (sscanf(line, "y=%d", &cfg->y) == 1)
+      continue;
+  }
+  fclose(f);
+}
+
+void reset_timer(Timer *timer, SDL_Window *window) {
+  timer->state = w;
+  timer->sec_remain = timer->config.work_min * 60.0;
+  timer->paused = false;
+  timer->elapsed_work = 0;
+  timer->elapsed_break = 0;
+  timer->pause_duration = 0;
+  if (timer->is_shaking) {
+    SDL_SetWindowPosition(window, timer->base_x, timer->base_y);
+    timer->is_shaking = false;
+  }
+  if (timer->music && timer->config.sound_on) {
+    Mix_SetMusicPosition(0);
+    Mix_ResumeMusic();
+  }
+}
+
+void open_settings_window(Timer *timer, TTF_Font *font) {
+  if (timer->settings_win)
+    return;
+
+  timer->settings_win =
+      SDL_CreateWindow("Settings", SDL_WINDOWPOS_CENTERED,
+                       SDL_WINDOWPOS_CENTERED, 300, 150, SDL_WINDOW_SHOWN);
+  timer->settings_ren =
+      SDL_CreateRenderer(timer->settings_win, -1, SDL_RENDERER_ACCELERATED);
+}
+
+void render_settings(Timer *timer, TTF_Font *font) {
+  if (!timer->settings_win)
+    return;
+
+  SDL_SetRenderDrawColor(timer->settings_ren, 30, 33, 40, 255);
+  SDL_RenderClear(timer->settings_ren);
+
+  SDL_Color white = {255, 255, 255, 255};
+  char buf[64];
+
+  // Work
+  sprintf(buf, "Work: %d min (Use Up/Down)", timer->config.work_min);
+  SDL_Surface *s = TTF_RenderText_Blended(font, buf, white);
+  SDL_Texture *t = SDL_CreateTextureFromSurface(timer->settings_ren, s);
+  SDL_Rect r = {20, 20, s->w, s->h};
+  SDL_RenderCopy(timer->settings_ren, t, NULL, &r);
+  SDL_FreeSurface(s);
+  SDL_DestroyTexture(t);
+
+  // Break
+  sprintf(buf, "Break: %d min (Use Left/Right)", timer->config.break_min);
+  s = TTF_RenderText_Blended(font, buf, white);
+  t = SDL_CreateTextureFromSurface(timer->settings_ren, s);
+  r = (SDL_Rect){20, 60, s->w, s->h};
+  SDL_RenderCopy(timer->settings_ren, t, NULL, &r);
+  SDL_FreeSurface(s);
+  SDL_DestroyTexture(t);
+
+  // Sound
+  sprintf(buf, "Sound: %s (Use Enter)", timer->config.sound_on ? "ON" : "OFF");
+  s = TTF_RenderText_Blended(font, buf, white);
+  t = SDL_CreateTextureFromSurface(timer->settings_ren, s);
+  r = (SDL_Rect){20, 100, s->w, s->h};
+  SDL_RenderCopy(timer->settings_ren, t, NULL, &r);
+  SDL_FreeSurface(s);
+  SDL_DestroyTexture(t);
+
+  SDL_RenderPresent(timer->settings_ren);
+}
+
 void snap_to_corner(SDL_Window *window) {
   int displayIndex = SDL_GetWindowDisplayIndex(window);
   if (displayIndex < 0)
@@ -259,6 +384,15 @@ void snap_to_corner(SDL_Window *window) {
   // like Cocoa's animate:YES, so it will snap instantly. To animate,
   // one would need a custom interpolation loop.
   SDL_SetWindowPosition(window, nearestCorner.x, nearestCorner.y);
+
+  // Save new position
+  void *data = SDL_GetWindowData(window, "timer");
+  if (data) {
+    Timer *timer = (Timer *)data;
+    timer->config.x = nearestCorner.x;
+    timer->config.y = nearestCorner.y;
+    save_config(&timer->config);
+  }
 }
 
 int main(int argc, char *argv[]) {
@@ -269,40 +403,158 @@ int main(int argc, char *argv[]) {
   SDL_GL_SetAttribute(SDL_GL_MULTISAMPLEBUFFERS, 1);
   SDL_GL_SetAttribute(SDL_GL_MULTISAMPLESAMPLES, 4);
 
-  // wimndow
-
-  SDL_Window *window = SDL_CreateWindow("pomopomo", SDL_WINDOWPOS_CENTERED,
-                                        SDL_WINDOWPOS_CENTERED, ww, wh,
-                                        SDL_WINDOW_OPENGL | SDL_WINDOW_SHOWN);
-
-  SDL_SetWindowHitTest(window, drag_hit_test, NULL);
-
-  SDL_GLContext context = SDL_GL_CreateContext(window);
-  SDL_GL_SetSwapInterval(1); // VSYNCCCCCCC!!!
-
-  TTF_Font *font_large = TTF_OpenFont(FONT_PATH, 40);
   TTF_Font *font_small = TTF_OpenFont(FONT_PATH, 10);
 
-  Timer timer = {w, (double)wd, false, SDL_GetTicks(), 0.0, 0, 0, false};
+  Timer timer = {w};
+  timer.last_frame_time = SDL_GetTicks();
+  load_config(&timer.config);
+  timer.sec_remain = timer.config.work_min * 60.0;
+
+  // wimndow
+  SDL_Window *window = SDL_CreateWindow(
+      "pomopomo", timer.config.x, timer.config.y, ww, wh,
+      SDL_WINDOW_OPENGL | SDL_WINDOW_SHOWN | SDL_WINDOW_BORDERLESS);
+
+  if (!window) {
+    fprintf(stderr, "Window creation failed: %s\n", SDL_GetError());
+    return 1;
+  }
+
+  // If we used centered, set the real position now
+  int actualX, actualY;
+  SDL_GetWindowPosition(window, &actualX, &actualY);
+  timer.config.x = actualX;
+  timer.config.y = actualY;
+  save_config(&timer.config);
+
+  SDL_SetWindowHitTest(window, drag_hit_test, NULL);
+  SDL_SetWindowData(window, "timer", &timer);
   CachedText time_cache = {0}, label_cache = {0};
   bool running = true;
   SDL_Event e;
+
+  SDL_GLContext context = SDL_GL_CreateContext(window);
+  if (!context) {
+    fprintf(stderr, "GL Context creation failed: %s\n", SDL_GetError());
+    return 1;
+  }
+  SDL_GL_MakeCurrent(window, context);
+  SDL_GL_SetSwapInterval(1); // VSYNCCCCCCC!!!
 
   glEnable(GL_BLEND);
   glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
   glEnable(GL_MULTISAMPLE);
 
+  TTF_Font *font_large = TTF_OpenFont(FONT_PATH, 40);
+  if (!font_large) {
+    fprintf(stderr, "Failed to load large font: %s\n", TTF_GetError());
+  }
+  if (!font_small) {
+    fprintf(stderr, "Failed to load small font: %s\n", TTF_GetError());
+  }
+
+  if (Mix_OpenAudio(44100, MIX_DEFAULT_FORMAT, 2, 2048) < 0) {
+    fprintf(stderr, "SDL_mixer could not initialize! SDL_mixer Error: %s\n",
+            Mix_GetError());
+  }
+  timer.music = Mix_LoadMUS("res/timer.mp3");
+  if (timer.music && timer.config.sound_on) {
+    Mix_PlayMusic(timer.music, -1);
+  } else if (!timer.music) {
+    fprintf(stderr, "Failed to load music: %s\n", Mix_GetError());
+  }
+
   while (running) {
     while (SDL_PollEvent(&e)) {
       if (e.type == SDL_QUIT)
         running = false;
-      if (e.type == SDL_KEYDOWN && e.key.keysym.sym == SDLK_SPACE)
-        timer.paused = !timer.paused;
+
+      if (e.type == SDL_WINDOWEVENT &&
+          e.window.event == SDL_WINDOWEVENT_CLOSE) {
+        if (timer.settings_win &&
+            e.window.windowID == SDL_GetWindowID(timer.settings_win)) {
+          SDL_DestroyRenderer(timer.settings_ren);
+          SDL_DestroyWindow(timer.settings_win);
+          timer.settings_win = NULL;
+          timer.settings_ren = NULL;
+          save_config(&timer.config);
+        } else {
+          running = false;
+        }
+      }
+
+      if (e.type == SDL_KEYDOWN) {
+        if (e.key.keysym.sym == SDLK_SPACE) {
+          timer.paused = !timer.paused;
+          if (timer.paused)
+            Mix_PauseMusic();
+          else
+            Mix_ResumeMusic();
+        } else if (e.key.keysym.sym == SDLK_r) {
+          reset_timer(&timer, window);
+        } else if (e.key.keysym.sym == SDLK_s) {
+          if (!timer.settings_win)
+            open_settings_window(&timer, font_small);
+          else {
+            SDL_DestroyRenderer(timer.settings_ren);
+            SDL_DestroyWindow(timer.settings_win);
+            timer.settings_win = NULL;
+            timer.settings_ren = NULL;
+            save_config(&timer.config);
+          }
+        }
+
+        if (timer.settings_win) {
+          if (e.key.keysym.sym == SDLK_UP)
+            timer.config.work_min++;
+          if (e.key.keysym.sym == SDLK_DOWN && timer.config.work_min > 1)
+            timer.config.work_min--;
+          if (e.key.keysym.sym == SDLK_RIGHT)
+            timer.config.break_min++;
+          if (e.key.keysym.sym == SDLK_LEFT && timer.config.break_min > 1)
+            timer.config.break_min--;
+          if (e.key.keysym.sym == SDLK_RETURN ||
+              e.key.keysym.sym == SDLK_KP_ENTER) {
+            timer.config.sound_on = !timer.config.sound_on;
+            if (timer.config.sound_on)
+              Mix_ResumeMusic();
+            else
+              Mix_HaltMusic();
+          }
+
+          // Auto update timer if changed
+          timer.sec_remain = timer.config.work_min * 60.0;
+          timer.elapsed_work = 0;
+          timer.elapsed_break = 0;
+          timer.state = w;
+        }
+      }
       if (e.type == SDL_WINDOWEVENT &&
           e.window.event == SDL_WINDOWEVENT_FOCUS_LOST) {
         snap_to_corner(window);
       }
+      if (e.type == SDL_WINDOWEVENT &&
+          e.window.event == SDL_WINDOWEVENT_FOCUS_GAINED) {
+        Config old = timer.config;
+        load_config(&timer.config);
+        if (old.work_min != timer.config.work_min ||
+            old.break_min != timer.config.break_min) {
+          reset_timer(&timer, window);
+        }
+        if (old.sound_on != timer.config.sound_on) {
+          if (timer.config.sound_on) {
+            Mix_PlayMusic(timer.music, -1);
+          } else {
+            Mix_HaltMusic();
+          }
+        }
+      }
       if (e.type == SDL_MOUSEBUTTONUP) {
+        int wx, wy;
+        SDL_GetWindowPosition(window, &wx, &wy);
+        timer.config.x = wx;
+        timer.config.y = wy;
+        save_config(&timer.config);
         snap_to_corner(window);
       }
     }
@@ -317,13 +569,20 @@ int main(int argc, char *argv[]) {
       }
       timer.pause_duration = 0;
       timer.sec_remain -= dt;
+      if (timer.state == w)
+        timer.elapsed_work += dt;
+      else
+        timer.elapsed_break += dt;
+
       if (timer.sec_remain <= 0) {
         if (timer.state == w) {
           timer.state = b;
-          timer.sec_remain = bd;
+          timer.sec_remain = timer.config.break_min * 60.0;
         } else {
           timer.state = w;
-          timer.sec_remain = wd;
+          timer.sec_remain = timer.config.work_min * 60.0;
+          timer.elapsed_work = 0;
+          timer.elapsed_break = 0;
         }
       }
     } else {
@@ -337,6 +596,21 @@ int main(int argc, char *argv[]) {
         int offsetY = (rand() % 5) - 2;
         SDL_SetWindowPosition(window, timer.base_x + offsetX,
                               timer.base_y + offsetY);
+      }
+    }
+
+    // sync audio
+    if (timer.music && !timer.paused && timer.config.sound_on) {
+      double target_pos;
+      if (timer.state == w) {
+        target_pos = fmod(timer.elapsed_work, 1500.0);
+      } else {
+        target_pos = 1500.0 + fmod(timer.elapsed_break, 300.0);
+      }
+
+      double music_pos = Mix_GetMusicPosition(timer.music);
+      if (fabs(music_pos - target_pos) > 1.0) {
+        Mix_SetMusicPosition(target_pos);
       }
     }
 
@@ -356,7 +630,13 @@ int main(int argc, char *argv[]) {
                       1.0f);
 
     // progress
-    double total = (timer.state == w) ? wd : bd;
+    double total = (timer.state == w) ? timer.config.work_min * 60.0
+                                      : timer.config.break_min * 60.0;
+
+    // Draw settings if open
+    if (timer.settings_win) {
+      render_settings(&timer, font_small);
+    }
     float progress = (float)(timer.sec_remain / total);
     if (progress < 0)
       progress = 0;
@@ -393,6 +673,10 @@ int main(int argc, char *argv[]) {
     glDeleteTextures(1, &time_cache.texture);
   if (label_cache.texture)
     glDeleteTextures(1, &label_cache.texture);
+  if (timer.music) {
+    Mix_FreeMusic(timer.music);
+  }
+  Mix_CloseAudio();
   TTF_CloseFont(font_large);
   TTF_CloseFont(font_small);
   TTF_Quit();
