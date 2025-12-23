@@ -1,3 +1,4 @@
+#import <ApplicationServices/ApplicationServices.h>
 #import <Cocoa/Cocoa.h>
 #import <QuartzCore/QuartzCore.h>
 #include <math.h>
@@ -13,6 +14,17 @@ typedef enum { STATE_WORK, STATE_BREAK } TimerState;
 @property(nonatomic, assign) double secRemaining;
 @property(nonatomic, assign) TimerState state;
 @property(nonatomic, assign) BOOL paused;
+@end
+
+@interface PomoWindow : NSWindow
+@end
+
+@interface PomoAppDelegate : NSObject <NSApplicationDelegate>
+@property(nonatomic, strong) NSWindow *window;
+@property(nonatomic, strong) PomoView *pomoView;
+@property(nonatomic, strong) NSTimer *timer;
+- (void)handleKeyDown:(NSEvent *)event;
+- (void)snapToNearestWindow;
 @end
 
 @implementation PomoView
@@ -60,8 +72,9 @@ typedef enum { STATE_WORK, STATE_BREAK } TimerState;
   int s = (int)ceil(self.secRemaining);
   NSString *timeStr = [NSString stringWithFormat:@"%02d:%02d", s / 60, s % 60];
   NSString *labelStr =
-      self.paused ? @"PAUSED"
-                  : (self.state == STATE_WORK ? @"Good Boy :3" : @"BREAK!! ENJOY");
+      self.paused
+          ? @"PAUSED"
+          : (self.state == STATE_WORK ? @"GOOD BOY :3" : @"BREAK! ENJOY");
 
   NSMutableParagraphStyle *style = [[NSMutableParagraphStyle alloc] init];
   style.alignment = NSTextAlignmentCenter;
@@ -100,18 +113,12 @@ typedef enum { STATE_WORK, STATE_BREAK } TimerState;
   [labelStr drawInRect:labelRect withAttributes:labelAttrs];
 }
 
-@end
+- (void)mouseDown:(NSEvent *)event {
+  [self.window performWindowDragWithEvent:event];
+  // After performWindowDragWithEvent returns, the drag is finished.
+  [(PomoAppDelegate *)[NSApp delegate] snapToNearestWindow];
+}
 
-@class PomoAppDelegate;
-
-@interface PomoWindow : NSWindow
-@end
-
-@interface PomoAppDelegate : NSObject <NSApplicationDelegate>
-@property(nonatomic, strong) NSWindow *window;
-@property(nonatomic, strong) PomoView *pomoView;
-@property(nonatomic, strong) NSTimer *timer;
-- (void)handleKeyDown:(NSEvent *)event;
 @end
 
 @implementation PomoWindow
@@ -171,6 +178,90 @@ typedef enum { STATE_WORK, STATE_BREAK } TimerState;
     }
   }
   [self.pomoView setNeedsDisplay:YES];
+}
+
+- (void)snapToNearestWindow {
+  NSRect myFrame = self.window.frame;
+  CGFloat snapDistance = 20.0;
+  NSRect snapFrame = myFrame;
+
+  // 1. Snapping to screens
+  for (NSScreen *screen in [NSScreen screens]) {
+    NSRect sFrame = [screen visibleFrame];
+
+    // Left
+    if (fabs(NSMinX(myFrame) - NSMinX(sFrame)) < snapDistance)
+      snapFrame.origin.x = NSMinX(sFrame);
+    // Right
+    if (fabs(NSMaxX(myFrame) - NSMaxX(sFrame)) < snapDistance)
+      snapFrame.origin.x = NSMaxX(sFrame) - myFrame.size.width;
+    // Bottom
+    if (fabs(NSMinY(myFrame) - NSMinY(sFrame)) < snapDistance)
+      snapFrame.origin.y = NSMinY(sFrame);
+    // Top
+    if (fabs(NSMaxY(myFrame) - NSMaxY(sFrame)) < snapDistance)
+      snapFrame.origin.y = NSMaxY(sFrame) - myFrame.size.height;
+  }
+
+  // 2. Snapping to other windows
+  CFArrayRef windowList = CGWindowListCopyWindowInfo(
+      kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements,
+      kCGNullWindowID);
+  if (windowList) {
+    NSArray *windows = (__bridge NSArray *)windowList;
+    NSInteger myWindowNumber = [self.window windowNumber];
+    CGFloat mainScreenHeight = NSMaxY([[[NSScreen screens] firstObject] frame]);
+
+    for (NSDictionary *dict in windows) {
+      NSNumber *winNum = dict[(id)kCGWindowNumber];
+      if ([winNum integerValue] == myWindowNumber)
+        continue;
+
+      CGRect cgBounds;
+      CGRectMakeWithDictionaryRepresentation(
+          (CFDictionaryRef)dict[(id)kCGWindowBounds], &cgBounds);
+
+      // Convert CG bounds to Cocoa coordinates
+      // CG (0,0) is top-left of main screen. Cocoa (0,0) is bottom-left.
+      NSRect otherFrame = NSMakeRect(
+          cgBounds.origin.x,
+          mainScreenHeight - (cgBounds.origin.y + cgBounds.size.height),
+          cgBounds.size.width, cgBounds.size.height);
+
+      // Snap edges
+      // My Left to Other Right
+      if (fabs(NSMinX(myFrame) - NSMaxX(otherFrame)) < snapDistance)
+        snapFrame.origin.x = NSMaxX(otherFrame);
+      // My Right to Other Left
+      if (fabs(NSMaxX(myFrame) - NSMinX(otherFrame)) < snapDistance)
+        snapFrame.origin.x = NSMinX(otherFrame) - myFrame.size.width;
+      // My Bottom to Other Top
+      if (fabs(NSMinY(myFrame) - NSMaxY(otherFrame)) < snapDistance)
+        snapFrame.origin.y = NSMaxY(otherFrame);
+      // My Top to Other Bottom
+      if (fabs(NSMaxY(myFrame) - NSMinY(otherFrame)) < snapDistance)
+        snapFrame.origin.y = NSMinY(otherFrame) - myFrame.size.height;
+
+      // Align edges
+      // My Left to Other Left
+      if (fabs(NSMinX(myFrame) - NSMinX(otherFrame)) < snapDistance)
+        snapFrame.origin.x = NSMinX(otherFrame);
+      // My Right to Other Right
+      if (fabs(NSMaxX(myFrame) - NSMaxX(otherFrame)) < snapDistance)
+        snapFrame.origin.x = NSMaxX(otherFrame) - myFrame.size.width;
+      // My Top to Other Top
+      if (fabs(NSMaxY(myFrame) - NSMaxY(otherFrame)) < snapDistance)
+        snapFrame.origin.y = NSMaxY(otherFrame) - myFrame.size.height;
+      // My Bottom to Other Bottom
+      if (fabs(NSMinY(myFrame) - NSMinY(otherFrame)) < snapDistance)
+        snapFrame.origin.y = NSMinY(otherFrame);
+    }
+    CFRelease(windowList);
+  }
+
+  if (!NSEqualRects(myFrame, snapFrame)) {
+    [self.window setFrame:snapFrame display:YES animate:YES];
+  }
 }
 
 - (void)handleKeyDown:(NSEvent *)event {
