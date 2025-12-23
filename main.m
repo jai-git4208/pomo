@@ -61,7 +61,7 @@ typedef enum { STATE_WORK, STATE_BREAK } TimerState;
   NSString *timeStr = [NSString stringWithFormat:@"%02d:%02d", s / 60, s % 60];
   NSString *labelStr =
       self.paused ? @"PAUSED"
-                  : (self.state == STATE_WORK ? @"FOCUSING" : @"BREAKING");
+                  : (self.state == STATE_WORK ? @"Good Boy :3" : @"BREAK!! ENJOY");
 
   NSMutableParagraphStyle *style = [[NSMutableParagraphStyle alloc] init];
   style.alignment = NSTextAlignmentCenter;
