@@ -35,10 +35,19 @@ typedef struct {
   int x, y;
 } Config;
 
+#define MAX_HISTORY 365
+
+typedef struct {
+  char date[11];
+  int sessions;
+} HistoryEntry;
+
 typedef struct {
   char last_date[11]; // YYYY-MM-DD
   int daily_sessions;
   int consecutive_days;
+  HistoryEntry history[MAX_HISTORY];
+  int history_count;
 } Streak;
 
 typedef struct {
@@ -328,6 +337,9 @@ void save_streak(const Streak *s) {
   fprintf(f, "last_date=%s\n", s->last_date);
   fprintf(f, "daily_sessions=%d\n", s->daily_sessions);
   fprintf(f, "consecutive_days=%d\n", s->consecutive_days);
+  for (int i = 0; i < s->history_count; i++) {
+    fprintf(f, "h:%s=%d\n", s->history[i].date, s->history[i].sessions);
+  }
   fclose(f);
 }
 
@@ -335,6 +347,7 @@ void load_streak(Streak *s) {
   strcpy(s->last_date, "0000-00-00");
   s->daily_sessions = 0;
   s->consecutive_days = 0;
+  s->history_count = 0;
 
   FILE *f = fopen(STREAK_PATH, "r");
   if (!f)
@@ -347,6 +360,15 @@ void load_streak(Streak *s) {
       continue;
     if (sscanf(line, "consecutive_days=%d", &s->consecutive_days) == 1)
       continue;
+    char d[11];
+    int sess;
+    if (sscanf(line, "h:%10[^=]=%d", d, &sess) == 2) {
+      if (s->history_count < MAX_HISTORY) {
+        strcpy(s->history[s->history_count].date, d);
+        s->history[s->history_count].sessions = sess;
+        s->history_count++;
+      }
+    }
   }
   fclose(f);
 }
@@ -359,6 +381,20 @@ void update_streak(Streak *s) {
 
   if (strcmp(s->last_date, today) == 0) {
     s->daily_sessions++;
+    // Update history entry for today
+    bool found = false;
+    for (int i = 0; i < s->history_count; i++) {
+      if (strcmp(s->history[i].date, today) == 0) {
+        s->history[i].sessions = s->daily_sessions;
+        found = true;
+        break;
+      }
+    }
+    if (!found && s->history_count < MAX_HISTORY) {
+      strcpy(s->history[s->history_count].date, today);
+      s->history[s->history_count].sessions = s->daily_sessions;
+      s->history_count++;
+    }
   } else {
     // Check if it was yesterday
     struct tm last_tm = {0};
@@ -381,6 +417,20 @@ void update_streak(Streak *s) {
     }
     s->daily_sessions = 1;
     strcpy(s->last_date, today);
+
+    // Add new history entry
+    if (s->history_count < MAX_HISTORY) {
+      strcpy(s->history[s->history_count].date, today);
+      s->history[s->history_count].sessions = 1;
+      s->history_count++;
+    } else {
+      // Shift history to make room
+      for (int i = 0; i < MAX_HISTORY - 1; i++) {
+        s->history[i] = s->history[i + 1];
+      }
+      strcpy(s->history[MAX_HISTORY - 1].date, today);
+      s->history[MAX_HISTORY - 1].sessions = 1;
+    }
   }
   save_streak(s);
 }
@@ -488,7 +538,7 @@ void open_streak_window(Timer *timer, TTF_Font *font) {
     return;
   timer->streak_win =
       SDL_CreateWindow("Streak Counter", SDL_WINDOWPOS_CENTERED,
-                       SDL_WINDOWPOS_CENTERED, 300, 200, SDL_WINDOW_SHOWN);
+                       SDL_WINDOWPOS_CENTERED, 750, 250, SDL_WINDOW_SHOWN);
   timer->streak_ren =
       SDL_CreateRenderer(timer->streak_win, -1, SDL_RENDERER_ACCELERATED);
 }
@@ -496,9 +546,11 @@ void open_streak_window(Timer *timer, TTF_Font *font) {
 void render_streak(Timer *timer, TTF_Font *font) {
   if (!timer->streak_win)
     return;
-  SDL_SetRenderDrawColor(timer->streak_ren, 20, 22, 28, 255);
+  SDL_SetRenderDrawColor(timer->streak_ren, 13, 17, 23,
+                         255); // GitHub dark background
   SDL_RenderClear(timer->streak_ren);
   SDL_Color white = {255, 255, 255, 255};
+  SDL_Color gray = {139, 148, 158, 255};
   char buf[128];
 
   sprintf(buf, "Daily Sessions: %d", timer->streak.daily_sessions);
@@ -512,18 +564,127 @@ void render_streak(Timer *timer, TTF_Font *font) {
   sprintf(buf, "Consecutive Days: %d", timer->streak.consecutive_days);
   SDL_Surface *s2 = TTF_RenderText_Blended(font, buf, white);
   SDL_Texture *t2 = SDL_CreateTextureFromSurface(timer->streak_ren, s2);
-  SDL_Rect r2 = {20, 60, s2->w, s2->h};
+  SDL_Rect r2 = {200, 20, s2->w, s2->h};
   SDL_RenderCopy(timer->streak_ren, t2, NULL, &r2);
   SDL_FreeSurface(s2);
   SDL_DestroyTexture(t2);
 
   sprintf(buf, "Last Active: %s", timer->streak.last_date);
-  SDL_Surface *s3 = TTF_RenderText_Blended(font, buf, white);
+  SDL_Surface *s3 = TTF_RenderText_Blended(font, buf, gray);
   SDL_Texture *t3 = SDL_CreateTextureFromSurface(timer->streak_ren, s3);
-  SDL_Rect r3 = {20, 100, s3->w, s3->h};
+  SDL_Rect r3 = {400, 20, s3->w, s3->h};
   SDL_RenderCopy(timer->streak_ren, t3, NULL, &r3);
   SDL_FreeSurface(s3);
   SDL_DestroyTexture(t3);
+
+  // GitHub Graph
+  int start_x = 60;
+  int start_y = 70;
+  int sq_size = 10;
+  int gap = 3;
+
+  // Day labels
+  const char *days[] = {"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"};
+  for (int i = 0; i < 7; i++) {
+    if (i % 2 == 1) { // Only show Mon, Wed, Fri
+      SDL_Surface *ds = TTF_RenderText_Blended(font, days[i], gray);
+      SDL_Texture *dt = SDL_CreateTextureFromSurface(timer->streak_ren, ds);
+      SDL_Rect dr = {15, start_y + i * (sq_size + gap), ds->w, ds->h};
+      SDL_RenderCopy(timer->streak_ren, dt, NULL, &dr);
+      SDL_FreeSurface(ds);
+      SDL_DestroyTexture(dt);
+    }
+  }
+
+  // Month labels (simplified)
+  const char *months[] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                          "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
+  for (int i = 0; i < 12; i++) {
+    SDL_Surface *ms = TTF_RenderText_Blended(font, months[i], gray);
+    SDL_Texture *mt = SDL_CreateTextureFromSurface(timer->streak_ren, ms);
+    SDL_Rect mr = {start_x + i * 53, start_y - 20, ms->w, ms->h};
+    SDL_RenderCopy(timer->streak_ren, mt, NULL, &mr);
+    SDL_FreeSurface(ms);
+    SDL_DestroyTexture(mt);
+  }
+
+  time_t now = time(NULL);
+  struct tm *t_now = localtime(&now);
+  int today_dow = t_now->tm_wday;
+
+  for (int w = 0; w < 52; w++) {
+    for (int d = 0; d < 7; d++) {
+      // Calculate date for this square relative to today
+      int days_ago = (51 - w) * 7 + (today_dow - d);
+      if (days_ago < 0)
+        continue; // Future
+
+      time_t cell_time = now - days_ago * 86400;
+      struct tm *cell_tm = localtime(&cell_time);
+      char cell_date[11];
+      strftime(cell_date, sizeof(cell_date), "%Y-%m-%d", cell_tm);
+
+      int sessions = 0;
+      for (int i = 0; i < timer->streak.history_count; i++) {
+        if (strcmp(timer->streak.history[i].date, cell_date) == 0) {
+          sessions = timer->streak.history[i].sessions;
+          break;
+        }
+      }
+
+      SDL_Color color;
+      if (sessions == 0)
+        color = (SDL_Color){22, 27, 34, 255};
+      else if (sessions < 2)
+        color = (SDL_Color){14, 68, 41, 255};
+      else if (sessions < 4)
+        color = (SDL_Color){0, 109, 50, 255};
+      else if (sessions < 6)
+        color = (SDL_Color){38, 166, 65, 255};
+      else
+        color = (SDL_Color){57, 211, 83, 255};
+
+      SDL_SetRenderDrawColor(timer->streak_ren, color.r, color.g, color.b,
+                             color.a);
+      SDL_Rect rect = {start_x + w * (sq_size + gap),
+                       start_y + d * (sq_size + gap), sq_size, sq_size};
+      SDL_RenderFillRect(timer->streak_ren, &rect);
+    }
+  }
+
+  // Legend
+  int leg_x = start_x + 52 * (sq_size + gap) - 100;
+  int leg_y = start_y + 7 * (sq_size + gap) + 10;
+  SDL_Surface *ls = TTF_RenderText_Blended(font, "Less", gray);
+  SDL_Texture *lt = SDL_CreateTextureFromSurface(timer->streak_ren, ls);
+  SDL_Rect lr = {leg_x - ls->w - 5, leg_y, ls->w, ls->h};
+  SDL_RenderCopy(timer->streak_ren, lt, NULL, &lr);
+  SDL_FreeSurface(ls);
+  SDL_DestroyTexture(lt);
+
+  for (int i = 0; i < 5; i++) {
+    SDL_Color lc;
+    if (i == 0)
+      lc = (SDL_Color){22, 27, 34, 255};
+    else if (i == 1)
+      lc = (SDL_Color){14, 68, 41, 255};
+    else if (i == 2)
+      lc = (SDL_Color){0, 109, 50, 255};
+    else if (i == 3)
+      lc = (SDL_Color){38, 166, 65, 255};
+    else
+      lc = (SDL_Color){57, 211, 83, 255};
+    SDL_SetRenderDrawColor(timer->streak_ren, lc.r, lc.g, lc.b, lc.a);
+    SDL_Rect lrect = {leg_x + i * (sq_size + gap), leg_y, sq_size, sq_size};
+    SDL_RenderFillRect(timer->streak_ren, &lrect);
+  }
+
+  SDL_Surface *ms2 = TTF_RenderText_Blended(font, "More", gray);
+  SDL_Texture *mt2 = SDL_CreateTextureFromSurface(timer->streak_ren, ms2);
+  SDL_Rect mr2 = {leg_x + 5 * (sq_size + gap) + 5, leg_y, ms2->w, ms2->h};
+  SDL_RenderCopy(timer->streak_ren, mt2, NULL, &mr2);
+  SDL_FreeSurface(ms2);
+  SDL_DestroyTexture(mt2);
 
   SDL_RenderPresent(timer->streak_ren);
 }
@@ -678,6 +839,11 @@ int main(int argc, char *argv[]) {
       if (e.type == SDL_KEYDOWN || e.type == SDL_MOUSEBUTTONDOWN ||
           e.type == SDL_MOUSEMOTION) {
         timer.is_away = false;
+        if (timer.is_shaking) {
+          SDL_SetWindowPosition(window, timer.base_x, timer.base_y);
+          timer.is_shaking = false;
+          timer.pause_duration = 0;
+        }
       }
 
       if (e.type == SDL_KEYDOWN) {
@@ -845,7 +1011,7 @@ int main(int argc, char *argv[]) {
       }
     } else {
       timer.pause_duration += dt;
-      if (timer.pause_duration > 300.0) { // 5 minutes
+      if (timer.pause_duration > 300.0 && timer.state == w) { // 5 minutes
         if (!timer.is_shaking) {
           SDL_GetWindowPosition(window, &timer.base_x, &timer.base_y);
           timer.is_shaking = true;

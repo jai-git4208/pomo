@@ -20,6 +20,10 @@ typedef enum { STATE_WORK, STATE_BREAK } TimerState;
 @property(nonatomic, assign) int breakMin;
 @end
 
+@interface StreakGraphView : NSView
+@property(nonatomic, strong) NSDictionary *history;
+@end
+
 @interface PomoWindow : NSWindow
 @end
 
@@ -47,6 +51,7 @@ typedef enum { STATE_WORK, STATE_BREAK } TimerState;
 @property(nonatomic, strong) NSString *lastDate;
 @property(nonatomic, assign) int dailySessions;
 @property(nonatomic, assign) int consecutiveDays;
+@property(nonatomic, strong) NSMutableDictionary *history;
 @property(nonatomic, strong) NSWindow *streakWindow;
 @property(nonatomic, strong) NSWindow *settingsWindow;
 @property(nonatomic, strong) NSTextField *workField;
@@ -171,9 +176,157 @@ typedef enum { STATE_WORK, STATE_BREAK } TimerState;
 
 - (void)mouseDown:(NSEvent *)event {
   [(PomoAppDelegate *)[NSApp delegate] setIsAway:NO];
+  PomoAppDelegate *ad = (PomoAppDelegate *)[NSApp delegate];
+  if (ad.isShaking) {
+    NSRect frame = ad.window.frame;
+    frame.origin = ad.baseOrigin;
+    [ad.window setFrame:frame display:YES animate:NO];
+    ad.isShaking = NO;
+    ad.pauseDuration = 0;
+  }
   [self.window performWindowDragWithEvent:event];
   // After performWindowDragWithEvent returns, the drag is finished.
   [(PomoAppDelegate *)[NSApp delegate] snapToNearestCorner];
+}
+
+@end
+
+@implementation StreakGraphView
+
+- (BOOL)isFlipped {
+  return YES;
+}
+
+- (void)drawRect:(NSRect)dirtyRect {
+  CGContextRef ctx = [[NSGraphicsContext currentContext] CGContext];
+  [[NSColor colorWithDeviceRed:13 / 255.0
+                         green:17 / 255.0
+                          blue:23 / 255.0
+                         alpha:1.0] set];
+  NSRectFill(self.bounds);
+
+  CGFloat startX = 60;
+  CGFloat startY = 30;
+  CGFloat sqSize = 10;
+  CGFloat gap = 3;
+
+  NSColor *gray = [NSColor colorWithDeviceRed:139 / 255.0
+                                        green:148 / 255.0
+                                         blue:158 / 255.0
+                                        alpha:1.0];
+  NSDictionary *labelAttrs = @{
+    NSFontAttributeName : [NSFont systemFontOfSize:9],
+    NSForegroundColorAttributeName : gray
+  };
+
+  NSArray *days = @[ @"Sun", @"Mon", @"Tue", @"Wed", @"Thu", @"Fri", @"Sat" ];
+  for (int i = 0; i < 7; i++) {
+    if (i % 2 == 1) {
+      [[days objectAtIndex:i]
+             drawAtPoint:NSMakePoint(15, startY + i * (sqSize + gap) - 2)
+          withAttributes:labelAttrs];
+    }
+  }
+
+  NSArray *months = @[
+    @"Jan", @"Feb", @"Mar", @"Apr", @"May", @"Jun", @"Jul", @"Aug", @"Sep",
+    @"Oct", @"Nov", @"Dec"
+  ];
+  for (int i = 0; i < 12; i++) {
+    [[months objectAtIndex:i]
+           drawAtPoint:NSMakePoint(startX + i * 53, startY - 20)
+        withAttributes:labelAttrs];
+  }
+
+  NSDate *now = [NSDate date];
+  NSCalendar *cal = [NSCalendar currentCalendar];
+  NSDateComponents *comp = [cal components:NSCalendarUnitWeekday fromDate:now];
+  int todayDow = (int)comp.weekday - 1;
+
+  NSDateFormatter *df = [[NSDateFormatter alloc] init];
+  [df setDateFormat:@"yyyy-MM-dd"];
+
+  for (int w = 0; w < 52; w++) {
+    for (int d = 0; d < 7; d++) {
+      int daysAgo = (51 - w) * 7 + (todayDow - d);
+      if (daysAgo < 0)
+        continue;
+
+      NSDate *cellDate = [now dateByAddingTimeInterval:-daysAgo * 86400];
+      NSString *dateStr = [df stringFromDate:cellDate];
+      NSNumber *sessNum = [self.history objectForKey:dateStr];
+      int sessions = sessNum ? [sessNum intValue] : 0;
+
+      NSColor *color;
+      if (sessions == 0)
+        color = [NSColor colorWithDeviceRed:22 / 255.0
+                                      green:27 / 255.0
+                                       blue:34 / 255.0
+                                      alpha:1.0];
+      else if (sessions < 2)
+        color = [NSColor colorWithDeviceRed:14 / 255.0
+                                      green:68 / 255.0
+                                       blue:41 / 255.0
+                                      alpha:1.0];
+      else if (sessions < 4)
+        color = [NSColor colorWithDeviceRed:0 / 255.0
+                                      green:109 / 255.0
+                                       blue:50 / 255.0
+                                      alpha:1.0];
+      else if (sessions < 6)
+        color = [NSColor colorWithDeviceRed:38 / 255.0
+                                      green:166 / 255.0
+                                       blue:65 / 255.0
+                                      alpha:1.0];
+      else
+        color = [NSColor colorWithDeviceRed:57 / 255.0
+                                      green:211 / 255.0
+                                       blue:83 / 255.0
+                                      alpha:1.0];
+
+      [color setFill];
+      NSRectFill(NSMakeRect(startX + w * (sqSize + gap),
+                            startY + d * (sqSize + gap), sqSize, sqSize));
+    }
+  }
+
+  CGFloat legX = startX + 52 * (sqSize + gap) - 100;
+  CGFloat legY = startY + 7 * (sqSize + gap) + 10;
+  [@"Less" drawAtPoint:NSMakePoint(legX - 30, legY - 2)
+        withAttributes:labelAttrs];
+
+  for (int i = 0; i < 5; i++) {
+    NSColor *lc;
+    if (i == 0)
+      lc = [NSColor colorWithDeviceRed:22 / 255.0
+                                 green:27 / 255.0
+                                  blue:34 / 255.0
+                                 alpha:1.0];
+    else if (i == 1)
+      lc = [NSColor colorWithDeviceRed:14 / 255.0
+                                 green:68 / 255.0
+                                  blue:41 / 255.0
+                                 alpha:1.0];
+    else if (i == 2)
+      lc = [NSColor colorWithDeviceRed:0 / 255.0
+                                 green:109 / 255.0
+                                  blue:50 / 255.0
+                                 alpha:1.0];
+    else if (i == 3)
+      lc = [NSColor colorWithDeviceRed:38 / 255.0
+                                 green:166 / 255.0
+                                  blue:65 / 255.0
+                                 alpha:1.0];
+    else
+      lc = [NSColor colorWithDeviceRed:57 / 255.0
+                                 green:211 / 255.0
+                                  blue:83 / 255.0
+                                 alpha:1.0];
+    [lc setFill];
+    NSRectFill(NSMakeRect(legX + i * (sqSize + gap), legY, sqSize, sqSize));
+  }
+  [@"More" drawAtPoint:NSMakePoint(legX + 5 * (sqSize + gap) + 5, legY - 2)
+        withAttributes:labelAttrs];
 }
 
 @end
@@ -342,7 +495,8 @@ typedef enum { STATE_WORK, STATE_BREAK } TimerState;
       [self.audioPlayer pause];
     }
     self.pauseDuration += 1.0 / 60.0;
-    if (self.pauseDuration > 300.0) { // 5 minutes
+    if (self.pauseDuration > 300.0 &&
+        self.pomoView.state == STATE_WORK) { // 5 minutes
       if (!self.isShaking) {
         self.baseOrigin = self.window.frame.origin;
         self.isShaking = YES;
@@ -478,6 +632,7 @@ typedef enum { STATE_WORK, STATE_BREAK } TimerState;
   self.lastDate = @"0000-00-00";
   self.dailySessions = 0;
   self.consecutiveDays = 0;
+  self.history = [NSMutableDictionary dictionary];
 
   NSString *content = [NSString stringWithContentsOfFile:@"streak.txt"
                                                 encoding:NSUTF8StringEncoding
@@ -493,16 +648,23 @@ typedef enum { STATE_WORK, STATE_BREAK } TimerState;
           self.dailySessions = [parts[1] intValue];
         else if ([parts[0] isEqualToString:@"consecutive_days"])
           self.consecutiveDays = [parts[1] intValue];
+        else if ([parts[0] hasPrefix:@"h:"]) {
+          NSString *dateKey = [parts[0] substringFromIndex:2];
+          [self.history setObject:@([parts[1] intValue]) forKey:dateKey];
+        }
       }
     }
   }
 }
 
 - (void)saveStreak {
-  NSString *s =
-      [NSString stringWithFormat:
-                    @"last_date=%@\ndaily_sessions=%d\nconsecutive_days=%d\n",
-                    self.lastDate, self.dailySessions, self.consecutiveDays];
+  NSMutableString *s = [NSMutableString string];
+  [s appendFormat:@"last_date=%@\n", self.lastDate];
+  [s appendFormat:@"daily_sessions=%d\n", self.dailySessions];
+  [s appendFormat:@"consecutive_days=%d\n", self.consecutiveDays];
+  for (NSString *key in self.history) {
+    [s appendFormat:@"h:%@=%@\n", key, self.history[key]];
+  }
   [s writeToFile:@"streak.txt"
       atomically:YES
         encoding:NSUTF8StringEncoding
@@ -531,6 +693,7 @@ typedef enum { STATE_WORK, STATE_BREAK } TimerState;
     self.dailySessions = 1;
     self.lastDate = today;
   }
+  [self.history setObject:@(self.dailySessions) forKey:today];
   [self saveStreak];
 }
 
@@ -556,6 +719,13 @@ typedef enum { STATE_WORK, STATE_BREAK } TimerState;
 - (void)handleKeyDown:(NSEvent *)event {
   self.isAway = NO;
   self.pomoView.isAway = NO;
+  if (self.isShaking) {
+    NSRect frame = self.window.frame;
+    frame.origin = self.baseOrigin;
+    [self.window setFrame:frame display:YES animate:NO];
+    self.isShaking = NO;
+    self.pauseDuration = 0;
+  }
   if (event.keyCode == 49) { // Space
     self.pomoView.paused = !self.pomoView.paused;
   } else if (event.keyCode == 15) { // 'r'
@@ -737,7 +907,7 @@ typedef enum { STATE_WORK, STATE_BREAK } TimerState;
     return;
   }
 
-  NSRect frame = NSMakeRect(0, 0, 250, 150);
+  NSRect frame = NSMakeRect(0, 0, 750, 200);
   self.streakWindow = [[NSWindow alloc]
       initWithContentRect:frame
                 styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable
@@ -749,26 +919,29 @@ typedef enum { STATE_WORK, STATE_BREAK } TimerState;
   NSView *cv = [[NSView alloc] initWithFrame:frame];
   [self.streakWindow setContentView:cv];
 
-  CGFloat y = 110;
+  CGFloat y = 170;
   NSTextField *dailyLabel = [NSTextField
       labelWithString:[NSString stringWithFormat:@"Daily Sessions: %d",
                                                  self.dailySessions]];
-  dailyLabel.frame = NSMakeRect(20, y, 210, 20);
+  dailyLabel.frame = NSMakeRect(20, y, 150, 20);
   [cv addSubview:dailyLabel];
-  y -= 30;
 
   NSTextField *consecutiveLabel = [NSTextField
       labelWithString:[NSString stringWithFormat:@"Consecutive Days: %d",
                                                  self.consecutiveDays]];
-  consecutiveLabel.frame = NSMakeRect(20, y, 210, 20);
+  consecutiveLabel.frame = NSMakeRect(200, y, 180, 20);
   [cv addSubview:consecutiveLabel];
-  y -= 30;
 
   NSTextField *lastLabel = [NSTextField
       labelWithString:[NSString
                           stringWithFormat:@"Last Active: %@", self.lastDate]];
-  lastLabel.frame = NSMakeRect(20, y, 210, 20);
+  lastLabel.frame = NSMakeRect(400, y, 200, 20);
   [cv addSubview:lastLabel];
+
+  StreakGraphView *gv =
+      [[StreakGraphView alloc] initWithFrame:NSMakeRect(0, 0, 750, 160)];
+  gv.history = self.history;
+  [cv addSubview:gv];
 
   [self.streakWindow makeKeyAndOrderFront:nil];
 
