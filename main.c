@@ -472,8 +472,18 @@ void render_settings(Timer *timer, TTF_Font *font) {
   SDL_RenderClear(timer->settings_ren);
 
   SDL_Color white = {255, 255, 255, 255};
-  SDL_Color yellow = {255, 215, 0, 255};
-  char buf[128];
+  SDL_Color gray = {139, 148, 158, 255};
+  SDL_Color highlight = {56, 139, 253, 40}; // Blue-ish highlight
+  char buf[256];
+
+  // Title
+  SDL_Surface *title_s = TTF_RenderText_Blended(font, "Configuration", white);
+  SDL_Texture *title_t =
+      SDL_CreateTextureFromSurface(timer->settings_ren, title_s);
+  SDL_Rect title_r = {20, 10, title_s->w, title_s->h};
+  SDL_RenderCopy(timer->settings_ren, title_t, NULL, &title_r);
+  SDL_FreeSurface(title_s);
+  SDL_DestroyTexture(title_t);
 
   const char *settings_names[] = {"Work Duration (min)",
                                   "Break Duration (min)",
@@ -481,14 +491,24 @@ void render_settings(Timer *timer, TTF_Font *font) {
                                   "Sessions until Long Break",
                                   "Sound Enabled",
                                   "Auto-start Next Session",
-                                  "Opacity (0-100)",
+                                  "Opacity (Unused in C)",
                                   "Volume (0-128)",
                                   "Focus Idle Thr. (s)"};
 
   int num_settings = 9;
+  int start_y = 50;
 
   for (int i = 0; i < num_settings; i++) {
-    SDL_Color color = (timer->selected_setting == i) ? yellow : white;
+    SDL_Rect row_rect = {10, start_y + i * 35 - 5, 380, 30};
+
+    if (timer->selected_setting == i) {
+      SDL_SetRenderDrawColor(timer->settings_ren, highlight.r, highlight.g,
+                             highlight.b, highlight.a);
+      SDL_RenderFillRect(timer->settings_ren, &row_rect);
+    }
+
+    SDL_Color text_color = (timer->selected_setting == i) ? white : gray;
+
     switch (i) {
     case 0:
       sprintf(buf, "%s: %d", settings_names[i], timer->config.work_min);
@@ -522,9 +542,9 @@ void render_settings(Timer *timer, TTF_Font *font) {
       break;
     }
 
-    SDL_Surface *s = TTF_RenderText_Blended(font, buf, color);
+    SDL_Surface *s = TTF_RenderText_Blended(font, buf, text_color);
     SDL_Texture *t = SDL_CreateTextureFromSurface(timer->settings_ren, s);
-    SDL_Rect r = {20, 20 + i * 40, s->w, s->h};
+    SDL_Rect r = {20, start_y + i * 35, s->w, s->h};
     SDL_RenderCopy(timer->settings_ren, t, NULL, &r);
     SDL_FreeSurface(s);
     SDL_DestroyTexture(t);
@@ -546,17 +566,22 @@ void open_streak_window(Timer *timer, TTF_Font *font) {
 void render_streak(Timer *timer, TTF_Font *font) {
   if (!timer->streak_win)
     return;
-  SDL_SetRenderDrawColor(timer->streak_ren, 13, 17, 23,
-                         255); // GitHub dark background
+  // GitHub Dark Dimmed background
+  SDL_SetRenderDrawColor(timer->streak_ren, 22, 27, 34, 255);
   SDL_RenderClear(timer->streak_ren);
+
   SDL_Color white = {255, 255, 255, 255};
   SDL_Color gray = {139, 148, 158, 255};
-  char buf[128];
+  char buf[256];
+
+  // Header stats
+  // Use a slightly larger size for values? For now just keeping font uniform
+  // but improved positioning
 
   sprintf(buf, "Daily Sessions: %d", timer->streak.daily_sessions);
   SDL_Surface *s1 = TTF_RenderText_Blended(font, buf, white);
   SDL_Texture *t1 = SDL_CreateTextureFromSurface(timer->streak_ren, s1);
-  SDL_Rect r1 = {20, 20, s1->w, s1->h};
+  SDL_Rect r1 = {30, 20, s1->w, s1->h};
   SDL_RenderCopy(timer->streak_ren, t1, NULL, &r1);
   SDL_FreeSurface(s1);
   SDL_DestroyTexture(t1);
@@ -578,74 +603,104 @@ void render_streak(Timer *timer, TTF_Font *font) {
   SDL_DestroyTexture(t3);
 
   // GitHub Graph
-  int start_x = 60;
-  int start_y = 70;
+  int start_x = 50;
+  int start_y = 80;
   int sq_size = 10;
   int gap = 3;
 
+  // Colors (GitHub Dark)
+  // 0: #161b22, 1: #0e4429, 2: #006d32, 3: #26a641, 4: #39d353
+  SDL_Color c0 = {
+      22, 27, 34,
+      255}; // bg actually but here for empty cells use a lighter shade
+  SDL_Color c_empty = {45, 51, 59, 255}; // Empty cell
+  SDL_Color c1 = {14, 68, 41, 255};
+  SDL_Color c2 = {0, 109, 50, 255};
+  SDL_Color c3 = {38, 166, 65, 255};
+  SDL_Color c4 = {57, 211, 83, 255};
+
   // Day labels
-  const char *days[] = {"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"};
+  const char *days[] = {"", "Mon", "", "Wed", "", "Fri", ""};
   for (int i = 0; i < 7; i++) {
-    if (i % 2 == 1) { // Only show Mon, Wed, Fri
+    if (strlen(days[i]) > 0) {
       SDL_Surface *ds = TTF_RenderText_Blended(font, days[i], gray);
       SDL_Texture *dt = SDL_CreateTextureFromSurface(timer->streak_ren, ds);
-      SDL_Rect dr = {15, start_y + i * (sq_size + gap), ds->w, ds->h};
+      SDL_Rect dr = {10, start_y + i * (sq_size + gap) - 2, ds->w, ds->h};
       SDL_RenderCopy(timer->streak_ren, dt, NULL, &dr);
       SDL_FreeSurface(ds);
       SDL_DestroyTexture(dt);
     }
   }
 
-  // Month labels (simplified)
+  // Month labels
   const char *months[] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun",
                           "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
-  for (int i = 0; i < 12; i++) {
-    SDL_Surface *ms = TTF_RenderText_Blended(font, months[i], gray);
-    SDL_Texture *mt = SDL_CreateTextureFromSurface(timer->streak_ren, ms);
-    SDL_Rect mr = {start_x + i * 53, start_y - 20, ms->w, ms->h};
-    SDL_RenderCopy(timer->streak_ren, mt, NULL, &mr);
-    SDL_FreeSurface(ms);
-    SDL_DestroyTexture(mt);
-  }
+
+  // Logic to place month labels roughly where the first day of that month
+  // appears Simplified: just evenly spaced for now or based on week index We
+  // are showing 52 weeks ending today.
 
   time_t now = time(NULL);
   struct tm *t_now = localtime(&now);
-  int today_dow = t_now->tm_wday;
+  int current_month = t_now->tm_mon; // 0-11
+
+  // We can just iterate weeks and check if month changed.
+
+  int prev_mon = -1;
 
   for (int w = 0; w < 52; w++) {
+    // Get date of the first day (Sunday) of this week column
+    int days_ago = (51 - w) * 7 + t_now->tm_wday;
+    time_t cell_time = now - days_ago * 86400;
+    struct tm *cell_tm = localtime(&cell_time);
+
+    if (w == 0 || cell_tm->tm_mon != prev_mon) {
+      // New month
+      SDL_Surface *ms =
+          TTF_RenderText_Blended(font, months[cell_tm->tm_mon], gray);
+      SDL_Texture *mt = SDL_CreateTextureFromSurface(timer->streak_ren, ms);
+      SDL_Rect mr = {start_x + w * (sq_size + gap), start_y - 20, ms->w, ms->h};
+      SDL_RenderCopy(timer->streak_ren, mt, NULL, &mr);
+      SDL_FreeSurface(ms);
+      SDL_DestroyTexture(mt);
+      prev_mon = cell_tm->tm_mon;
+    }
+  }
+
+  // Draw grid
+  for (int w = 0; w < 52; w++) {
     for (int d = 0; d < 7; d++) {
-      // Calculate date for this square relative to today
-      int days_ago = (51 - w) * 7 + (today_dow - d);
-      if (days_ago < 0)
-        continue; // Future
+      int days_ago = (51 - w) * 7 + (t_now->tm_wday - d);
+      SDL_Color color = c_empty;
 
-      time_t cell_time = now - days_ago * 86400;
-      struct tm *cell_tm = localtime(&cell_time);
-      char cell_date[11];
-      strftime(cell_date, sizeof(cell_date), "%Y-%m-%d", cell_tm);
+      if (days_ago >= 0) {
+        time_t cell_time = now - days_ago * 86400;
+        struct tm *cell_tm = localtime(&cell_time);
+        char cell_date[11];
+        strftime(cell_date, sizeof(cell_date), "%Y-%m-%d", cell_tm);
 
-      int sessions = 0;
-      for (int i = 0; i < timer->streak.history_count; i++) {
-        if (strcmp(timer->streak.history[i].date, cell_date) == 0) {
-          sessions = timer->streak.history[i].sessions;
-          break;
+        int sessions = 0;
+        for (int i = 0; i < timer->streak.history_count; i++) {
+          if (strcmp(timer->streak.history[i].date, cell_date) == 0) {
+            sessions = timer->streak.history[i].sessions;
+            break;
+          }
+        }
+        if (sessions > 0) {
+          if (sessions < 2)
+            color = c1;
+          else if (sessions < 4)
+            color = c2;
+          else if (sessions < 6)
+            color = c3;
+          else
+            color = c4;
         }
       }
 
-      SDL_Color color;
-      if (sessions == 0)
-        color = (SDL_Color){22, 27, 34, 255};
-      else if (sessions < 2)
-        color = (SDL_Color){14, 68, 41, 255};
-      else if (sessions < 4)
-        color = (SDL_Color){0, 109, 50, 255};
-      else if (sessions < 6)
-        color = (SDL_Color){38, 166, 65, 255};
-      else
-        color = (SDL_Color){57, 211, 83, 255};
-
       SDL_SetRenderDrawColor(timer->streak_ren, color.r, color.g, color.b,
                              color.a);
+      // Draw rounded rect if possible, but SDL_RenderFillRect is just rect.
       SDL_Rect rect = {start_x + w * (sq_size + gap),
                        start_y + d * (sq_size + gap), sq_size, sq_size};
       SDL_RenderFillRect(timer->streak_ren, &rect);
@@ -654,34 +709,26 @@ void render_streak(Timer *timer, TTF_Font *font) {
 
   // Legend
   int leg_x = start_x + 52 * (sq_size + gap) - 100;
-  int leg_y = start_y + 7 * (sq_size + gap) + 10;
+  int leg_y = start_y + 7 * (sq_size + gap) + 15;
+
   SDL_Surface *ls = TTF_RenderText_Blended(font, "Less", gray);
   SDL_Texture *lt = SDL_CreateTextureFromSurface(timer->streak_ren, ls);
-  SDL_Rect lr = {leg_x - ls->w - 5, leg_y, ls->w, ls->h};
+  SDL_Rect lr = {leg_x - ls->w - 5, leg_y - 2, ls->w, ls->h};
   SDL_RenderCopy(timer->streak_ren, lt, NULL, &lr);
   SDL_FreeSurface(ls);
   SDL_DestroyTexture(lt);
 
+  SDL_Color colors[] = {c_empty, c1, c2, c3, c4};
   for (int i = 0; i < 5; i++) {
-    SDL_Color lc;
-    if (i == 0)
-      lc = (SDL_Color){22, 27, 34, 255};
-    else if (i == 1)
-      lc = (SDL_Color){14, 68, 41, 255};
-    else if (i == 2)
-      lc = (SDL_Color){0, 109, 50, 255};
-    else if (i == 3)
-      lc = (SDL_Color){38, 166, 65, 255};
-    else
-      lc = (SDL_Color){57, 211, 83, 255};
-    SDL_SetRenderDrawColor(timer->streak_ren, lc.r, lc.g, lc.b, lc.a);
+    SDL_SetRenderDrawColor(timer->streak_ren, colors[i].r, colors[i].g,
+                           colors[i].b, colors[i].a);
     SDL_Rect lrect = {leg_x + i * (sq_size + gap), leg_y, sq_size, sq_size};
     SDL_RenderFillRect(timer->streak_ren, &lrect);
   }
 
   SDL_Surface *ms2 = TTF_RenderText_Blended(font, "More", gray);
   SDL_Texture *mt2 = SDL_CreateTextureFromSurface(timer->streak_ren, ms2);
-  SDL_Rect mr2 = {leg_x + 5 * (sq_size + gap) + 5, leg_y, ms2->w, ms2->h};
+  SDL_Rect mr2 = {leg_x + 5 * (sq_size + gap) + 5, leg_y - 2, ms2->w, ms2->h};
   SDL_RenderCopy(timer->streak_ren, mt2, NULL, &mr2);
   SDL_FreeSurface(ms2);
   SDL_DestroyTexture(mt2);
@@ -786,7 +833,8 @@ int main(int argc, char *argv[]) {
   }
   SDL_GL_MakeCurrent(window, context);
   SDL_GL_SetSwapInterval(1); // VSYNCCCCCCC!!!
-  SDL_SetWindowOpacity(window, timer.config.opacity / 100.0f);
+  // Transparency removed as requested
+  // SDL_SetWindowOpacity(window, timer.config.opacity / 100.0f);
 
   glEnable(GL_BLEND);
   glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
@@ -919,7 +967,7 @@ int main(int argc, char *argv[]) {
               break;
             }
             if (timer.selected_setting == 6) {
-              SDL_SetWindowOpacity(window, timer.config.opacity / 100.0f);
+              // SDL_SetWindowOpacity(window, timer.config.opacity / 100.0f);
             }
             if (timer.selected_setting == 4 || timer.selected_setting == 7) {
               Mix_VolumeMusic(timer.config.volume);

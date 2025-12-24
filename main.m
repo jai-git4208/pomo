@@ -199,9 +199,10 @@ typedef enum { STATE_WORK, STATE_BREAK } TimerState;
 
 - (void)drawRect:(NSRect)dirtyRect {
   CGContextRef ctx = [[NSGraphicsContext currentContext] CGContext];
-  [[NSColor colorWithDeviceRed:13 / 255.0
-                         green:17 / 255.0
-                          blue:23 / 255.0
+  // GitHub Dark Dimmed background
+  [[NSColor colorWithDeviceRed:22 / 255.0
+                         green:27 / 255.0
+                          blue:34 / 255.0
                          alpha:1.0] set];
   NSRectFill(self.bounds);
 
@@ -215,13 +216,13 @@ typedef enum { STATE_WORK, STATE_BREAK } TimerState;
                                          blue:158 / 255.0
                                         alpha:1.0];
   NSDictionary *labelAttrs = @{
-    NSFontAttributeName : [NSFont systemFontOfSize:9],
+    NSFontAttributeName : [NSFont systemFontOfSize:10],
     NSForegroundColorAttributeName : gray
   };
 
-  NSArray *days = @[ @"Sun", @"Mon", @"Tue", @"Wed", @"Thu", @"Fri", @"Sat" ];
+  NSArray *days = @[ @"", @"Mon", @"", @"Wed", @"", @"Fri", @"" ];
   for (int i = 0; i < 7; i++) {
-    if (i % 2 == 1) {
+    if ([[days objectAtIndex:i] length] > 0) {
       [[days objectAtIndex:i]
              drawAtPoint:NSMakePoint(15, startY + i * (sqSize + gap) - 2)
           withAttributes:labelAttrs];
@@ -232,98 +233,102 @@ typedef enum { STATE_WORK, STATE_BREAK } TimerState;
     @"Jan", @"Feb", @"Mar", @"Apr", @"May", @"Jun", @"Jul", @"Aug", @"Sep",
     @"Oct", @"Nov", @"Dec"
   ];
-  for (int i = 0; i < 12; i++) {
-    [[months objectAtIndex:i]
-           drawAtPoint:NSMakePoint(startX + i * 53, startY - 20)
-        withAttributes:labelAttrs];
-  }
 
   NSDate *now = [NSDate date];
   NSCalendar *cal = [NSCalendar currentCalendar];
   NSDateComponents *comp = [cal components:NSCalendarUnitWeekday fromDate:now];
-  int todayDow = (int)comp.weekday - 1;
+  int todayDow = (int)comp.weekday - 1; // 0=Sun
 
   NSDateFormatter *df = [[NSDateFormatter alloc] init];
   [df setDateFormat:@"yyyy-MM-dd"];
 
+  int prev_mon = -1;
+
   for (int w = 0; w < 52; w++) {
-    for (int d = 0; d < 7; d++) {
-      int daysAgo = (51 - w) * 7 + (todayDow - d);
-      if (daysAgo < 0)
-        continue;
+    int daysAgo = (51 - w) * 7 + todayDow;
+    NSDate *cellDate = [now dateByAddingTimeInterval:-daysAgo * 86400];
+    NSDateComponents *c = [cal components:NSCalendarUnitMonth
+                                 fromDate:cellDate];
+    int m = (int)c.month - 1;
 
-      NSDate *cellDate = [now dateByAddingTimeInterval:-daysAgo * 86400];
-      NSString *dateStr = [df stringFromDate:cellDate];
-      NSNumber *sessNum = [self.history objectForKey:dateStr];
-      int sessions = sessNum ? [sessNum intValue] : 0;
+    if (w == 0 || m != prev_mon) {
+      [[months objectAtIndex:m]
+             drawAtPoint:NSMakePoint(startX + w * (sqSize + gap), startY - 20)
+          withAttributes:labelAttrs];
+      prev_mon = m;
+    }
+  }
 
-      NSColor *color;
-      if (sessions == 0)
-        color = [NSColor colorWithDeviceRed:22 / 255.0
-                                      green:27 / 255.0
-                                       blue:34 / 255.0
-                                      alpha:1.0];
-      else if (sessions < 2)
-        color = [NSColor colorWithDeviceRed:14 / 255.0
+  // Colors
+  NSColor *c_empty = [NSColor colorWithDeviceRed:45 / 255.0
+                                           green:51 / 255.0
+                                            blue:59 / 255.0
+                                           alpha:1.0];
+  NSColor *c1 = [NSColor colorWithDeviceRed:14 / 255.0
                                       green:68 / 255.0
                                        blue:41 / 255.0
                                       alpha:1.0];
-      else if (sessions < 4)
-        color = [NSColor colorWithDeviceRed:0 / 255.0
+  NSColor *c2 = [NSColor colorWithDeviceRed:0 / 255.0
                                       green:109 / 255.0
                                        blue:50 / 255.0
                                       alpha:1.0];
-      else if (sessions < 6)
-        color = [NSColor colorWithDeviceRed:38 / 255.0
+  NSColor *c3 = [NSColor colorWithDeviceRed:38 / 255.0
                                       green:166 / 255.0
                                        blue:65 / 255.0
                                       alpha:1.0];
-      else
-        color = [NSColor colorWithDeviceRed:57 / 255.0
+  NSColor *c4 = [NSColor colorWithDeviceRed:57 / 255.0
                                       green:211 / 255.0
                                        blue:83 / 255.0
                                       alpha:1.0];
 
+  for (int w = 0; w < 52; w++) {
+    for (int d = 0; d < 7; d++) {
+      int daysAgo = (51 - w) * 7 + (todayDow - d);
+      NSColor *color = c_empty;
+
+      if (daysAgo >= 0) {
+        NSDate *cellDate = [now dateByAddingTimeInterval:-daysAgo * 86400];
+        NSString *dateStr = [df stringFromDate:cellDate];
+        NSNumber *sessNum = [self.history objectForKey:dateStr];
+        int sessions = sessNum ? [sessNum intValue] : 0;
+
+        if (sessions > 0) {
+          if (sessions < 2)
+            color = c1;
+          else if (sessions < 4)
+            color = c2;
+          else if (sessions < 6)
+            color = c3;
+          else
+            color = c4;
+        }
+      }
+
       [color setFill];
-      NSRectFill(NSMakeRect(startX + w * (sqSize + gap),
-                            startY + d * (sqSize + gap), sqSize, sqSize));
+      NSBezierPath *path = [NSBezierPath
+          bezierPathWithRoundedRect:NSMakeRect(startX + w * (sqSize + gap),
+                                               startY + d * (sqSize + gap),
+                                               sqSize, sqSize)
+                            xRadius:2
+                            yRadius:2];
+      [path fill];
     }
   }
 
   CGFloat legX = startX + 52 * (sqSize + gap) - 100;
-  CGFloat legY = startY + 7 * (sqSize + gap) + 10;
+  CGFloat legY = startY + 7 * (sqSize + gap) + 15;
   [@"Less" drawAtPoint:NSMakePoint(legX - 30, legY - 2)
         withAttributes:labelAttrs];
 
+  NSArray *legendColors = @[ c_empty, c1, c2, c3, c4 ];
   for (int i = 0; i < 5; i++) {
-    NSColor *lc;
-    if (i == 0)
-      lc = [NSColor colorWithDeviceRed:22 / 255.0
-                                 green:27 / 255.0
-                                  blue:34 / 255.0
-                                 alpha:1.0];
-    else if (i == 1)
-      lc = [NSColor colorWithDeviceRed:14 / 255.0
-                                 green:68 / 255.0
-                                  blue:41 / 255.0
-                                 alpha:1.0];
-    else if (i == 2)
-      lc = [NSColor colorWithDeviceRed:0 / 255.0
-                                 green:109 / 255.0
-                                  blue:50 / 255.0
-                                 alpha:1.0];
-    else if (i == 3)
-      lc = [NSColor colorWithDeviceRed:38 / 255.0
-                                 green:166 / 255.0
-                                  blue:65 / 255.0
-                                 alpha:1.0];
-    else
-      lc = [NSColor colorWithDeviceRed:57 / 255.0
-                                 green:211 / 255.0
-                                  blue:83 / 255.0
-                                 alpha:1.0];
-    [lc setFill];
-    NSRectFill(NSMakeRect(legX + i * (sqSize + gap), legY, sqSize, sqSize));
+    [[legendColors objectAtIndex:i] setFill];
+    NSBezierPath *path = [NSBezierPath
+        bezierPathWithRoundedRect:NSMakeRect(legX + i * (sqSize + gap), legY,
+                                             sqSize, sqSize)
+                          xRadius:2
+                          yRadius:2];
+    [path fill];
   }
   [@"More" drawAtPoint:NSMakePoint(legX + 5 * (sqSize + gap) + 5, legY - 2)
         withAttributes:labelAttrs];
@@ -745,120 +750,136 @@ typedef enum { STATE_WORK, STATE_BREAK } TimerState;
     return;
   }
 
-  NSRect frame = NSMakeRect(0, 0, 300, 380);
+  NSRect frame = NSMakeRect(0, 0, 320, 420);
   self.settingsWindow = [[NSWindow alloc]
       initWithContentRect:frame
                 styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable
                   backing:NSBackingStoreBuffered
                     defer:NO];
-  [self.settingsWindow setTitle:@"Advanced Settings"];
+  [self.settingsWindow setTitle:@"Configuration"];
   [self.settingsWindow center];
 
   NSView *cv = [[NSView alloc] initWithFrame:frame];
   [self.settingsWindow setContentView:cv];
 
-  CGFloat y = 310;
+  CGFloat startY = 380;
+  CGFloat rowH = 35;
+  CGFloat labelW = 160;
+  CGFloat fieldW = 60;
+  CGFloat x = 30;
+
   // Work
-  [[NSTextField labelWithString:@"Work (min):"]
-      setFrame:NSMakeRect(20, y, 120, 20)];
-  [cv addSubview:[cv.subviews lastObject]];
+  NSTextField *lWork = [NSTextField labelWithString:@"Work Duration (min):"];
+  [lWork setFrame:NSMakeRect(x, startY, labelW, 20)];
+  [lWork setAlignment:NSTextAlignmentLeft];
+  [cv addSubview:lWork];
   self.workField = [NSTextField
       textFieldWithString:[NSString stringWithFormat:@"%d", self.workMin]];
-  self.workField.frame = NSMakeRect(150, y, 100, 20);
+  [self.workField setFrame:NSMakeRect(x + labelW + 10, startY, fieldW, 22)];
   [cv addSubview:self.workField];
-  y -= 30;
+  startY -= rowH;
 
   // Break
-  [[NSTextField labelWithString:@"Break (min):"]
-      setFrame:NSMakeRect(20, y, 120, 20)];
-  [cv addSubview:[cv.subviews lastObject]];
+  NSTextField *lBreak = [NSTextField labelWithString:@"Break Duration (min):"];
+  [lBreak setFrame:NSMakeRect(x, startY, labelW, 20)];
+  [lBreak setAlignment:NSTextAlignmentLeft];
+  [cv addSubview:lBreak];
   self.breakField = [NSTextField
       textFieldWithString:[NSString stringWithFormat:@"%d", self.breakMin]];
-  self.breakField.frame = NSMakeRect(150, y, 100, 20);
+  [self.breakField setFrame:NSMakeRect(x + labelW + 10, startY, fieldW, 22)];
   [cv addSubview:self.breakField];
-  y -= 30;
+  startY -= rowH;
 
   // Long Break
-  [[NSTextField labelWithString:@"Long Break (min):"]
-      setFrame:NSMakeRect(20, y, 120, 20)];
-  [cv addSubview:[cv.subviews lastObject]];
+  NSTextField *lLong = [NSTextField labelWithString:@"Long Break (min):"];
+  [lLong setFrame:NSMakeRect(x, startY, labelW, 20)];
+  [lLong setAlignment:NSTextAlignmentLeft];
+  [cv addSubview:lLong];
   self.longBreakField = [NSTextField
       textFieldWithString:[NSString stringWithFormat:@"%d", self.longBreakMin]];
-  self.longBreakField.frame = NSMakeRect(150, y, 100, 20);
+  [self.longBreakField
+      setFrame:NSMakeRect(x + labelW + 10, startY, fieldW, 22)];
   [cv addSubview:self.longBreakField];
-  y -= 30;
+  startY -= rowH;
 
   // Sessions
-  [[NSTextField labelWithString:@"Sessions until Long:"]
-      setFrame:NSMakeRect(20, y, 120, 20)];
-  [cv addSubview:[cv.subviews lastObject]];
+  NSTextField *lSess = [NSTextField labelWithString:@"Sessions until Long:"];
+  [lSess setFrame:NSMakeRect(x, startY, labelW, 20)];
+  [lSess setAlignment:NSTextAlignmentLeft];
+  [cv addSubview:lSess];
   self.sessionsField = [NSTextField
       textFieldWithString:[NSString
                               stringWithFormat:@"%d", self.sessionsUntilLong]];
-  self.sessionsField.frame = NSMakeRect(150, y, 100, 20);
+  [self.sessionsField setFrame:NSMakeRect(x + labelW + 10, startY, fieldW, 22)];
   [cv addSubview:self.sessionsField];
-  y -= 40;
-
-  // Sound & AutoStart
-  self.soundCheck = [NSButton checkboxWithTitle:@"Sound Enabled"
-                                         target:nil
-                                         action:nil];
-  self.soundCheck.frame = NSMakeRect(20, y, 130, 20);
-  self.soundCheck.state =
-      self.soundOn ? NSControlStateValueOn : NSControlStateValueOff;
-  [cv addSubview:self.soundCheck];
-
-  self.autoStartCheck = [NSButton checkboxWithTitle:@"Auto-start"
-                                             target:nil
-                                             action:nil];
-  self.autoStartCheck.frame = NSMakeRect(150, y, 130, 20);
-  self.autoStartCheck.state =
-      self.autoStart ? NSControlStateValueOn : NSControlStateValueOff;
-  [cv addSubview:self.autoStartCheck];
-  y -= 40;
+  startY -= rowH;
 
   // Opacity
-  [[NSTextField labelWithString:@"Opacity:"]
-      setFrame:NSMakeRect(20, y, 60, 20)];
-  [cv addSubview:[cv.subviews lastObject]];
+  NSTextField *lOp = [NSTextField
+      labelWithString:[NSString
+                          stringWithFormat:@"Opacity (%d%%):", self.opacity]];
+  [lOp setFrame:NSMakeRect(x, startY, labelW, 20)];
+  [cv addSubview:lOp];
   self.opacitySlider = [NSSlider sliderWithValue:self.opacity
                                         minValue:10
                                         maxValue:100
                                           target:nil
                                           action:nil];
-  self.opacitySlider.frame = NSMakeRect(80, y, 180, 20);
+  self.opacitySlider.frame = NSMakeRect(x + labelW + 10, startY, 100, 20);
   [cv addSubview:self.opacitySlider];
-  y -= 30;
+  startY -= rowH;
 
   // Volume
-  [[NSTextField labelWithString:@"Volume:"] setFrame:NSMakeRect(20, y, 60, 20)];
-  [cv addSubview:[cv.subviews lastObject]];
+  NSTextField *lVol = [NSTextField
+      labelWithString:[NSString stringWithFormat:@"Volume (%d):", self.volume]];
+  [lVol setFrame:NSMakeRect(x, startY, labelW, 20)];
+  [cv addSubview:lVol];
   self.volumeSlider = [NSSlider sliderWithValue:self.volume
                                        minValue:0
                                        maxValue:128
                                          target:nil
                                          action:nil];
-  self.volumeSlider.frame = NSMakeRect(80, y, 180, 20);
+  self.volumeSlider.frame = NSMakeRect(x + labelW + 10, startY, 100, 20);
   [cv addSubview:self.volumeSlider];
-  y -= 30;
+  startY -= rowH;
 
-  // Focus Threshold
-  [[NSTextField labelWithString:@"Focus Threshold (s):"]
-      setFrame:NSMakeRect(20, y, 130, 20)];
-  [cv addSubview:[cv.subviews lastObject]];
+  // Focus
+  NSTextField *lFocus = [NSTextField labelWithString:@"Focus Idle Thr. (s):"];
+  [lFocus setFrame:NSMakeRect(x, startY, labelW, 20)];
+  [lFocus setAlignment:NSTextAlignmentLeft];
+  [cv addSubview:lFocus];
   self.focusField = [NSTextField
       textFieldWithString:[NSString
                               stringWithFormat:@"%d", self.focusThreshold]];
-  self.focusField.frame = NSMakeRect(150, y, 100, 20);
+  [self.focusField setFrame:NSMakeRect(x + labelW + 10, startY, fieldW, 22)];
   [cv addSubview:self.focusField];
-  y -= 50;
+  startY -= rowH;
 
-  // Apply
-  NSButton *applyBtn = [NSButton buttonWithTitle:@"Apply Settings"
-                                          target:self
-                                          action:@selector(applySettings)];
-  applyBtn.frame = NSMakeRect(75, y, 150, 30);
-  [cv addSubview:applyBtn];
+  // Checkboxes
+  self.soundCheck = [NSButton checkboxWithTitle:@"Sound Enabled"
+                                         target:nil
+                                         action:nil];
+  self.soundCheck.state =
+      self.soundOn ? NSControlStateValueOn : NSControlStateValueOff;
+  self.soundCheck.frame = NSMakeRect(x, startY, 200, 20);
+  [cv addSubview:self.soundCheck];
+  startY -= rowH;
+
+  self.autoStartCheck = [NSButton checkboxWithTitle:@"Auto-start Next Session"
+                                             target:nil
+                                             action:nil];
+  self.autoStartCheck.state =
+      self.autoStart ? NSControlStateValueOn : NSControlStateValueOff;
+  self.autoStartCheck.frame = NSMakeRect(x, startY, 200, 20);
+  [cv addSubview:self.autoStartCheck];
+
+  // Save button
+  NSButton *saveBtn = [NSButton buttonWithTitle:@"Save & Close"
+                                         target:self
+                                         action:@selector(applySettings)];
+  saveBtn.frame = NSMakeRect(frame.size.width / 2 - 50, 20, 100, 30);
+  saveBtn.bezelStyle = NSBezelStyleRounded;
+  [cv addSubview:saveBtn];
 
   [self.settingsWindow makeKeyAndOrderFront:nil];
 }
