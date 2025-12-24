@@ -1,4 +1,6 @@
+#ifdef __APPLE__
 #include <ApplicationServices/ApplicationServices.h>
+#endif
 #include <SDL2/SDL.h>
 #include <SDL2/SDL_mixer.h>
 #include <SDL2/SDL_opengl.h>
@@ -15,7 +17,12 @@
 #define bd (5 * 60)
 #define wh 200
 #define ww 200
+
+#ifdef __APPLE__
 #define FONT_PATH "/System/Library/Fonts/Supplemental/Arial.ttf"
+#else
+#define FONT_PATH "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
+#endif
 #define CONFIG_PATH "pomo.cfg"
 #define STREAK_PATH "streak.txt"
 #include <time.h>
@@ -70,6 +77,7 @@ typedef struct {
   Streak streak;
   SDL_Window *streak_win;
   SDL_Renderer *streak_ren;
+  int settings_scroll_y;
 } Timer;
 
 typedef struct {
@@ -457,8 +465,8 @@ void open_settings_window(Timer *timer, TTF_Font *font) {
     return;
 
   timer->settings_win =
-      SDL_CreateWindow("Advanced Settings", SDL_WINDOWPOS_CENTERED,
-                       SDL_WINDOWPOS_CENTERED, 400, 350, SDL_WINDOW_SHOWN);
+      SDL_CreateWindow("Configuration", SDL_WINDOWPOS_CENTERED,
+                       SDL_WINDOWPOS_CENTERED, 320, 420, SDL_WINDOW_SHOWN);
   timer->settings_ren =
       SDL_CreateRenderer(timer->settings_win, -1, SDL_RENDERER_ACCELERATED);
   timer->selected_setting = 0;
@@ -476,14 +484,16 @@ void render_settings(Timer *timer, TTF_Font *font) {
   SDL_Color highlight = {56, 139, 253, 40}; // Blue-ish highlight
   char buf[256];
 
-  // Title
+  // Title (fixed at top)
   SDL_Surface *title_s = TTF_RenderText_Blended(font, "Configuration", white);
-  SDL_Texture *title_t =
-      SDL_CreateTextureFromSurface(timer->settings_ren, title_s);
-  SDL_Rect title_r = {20, 10, title_s->w, title_s->h};
-  SDL_RenderCopy(timer->settings_ren, title_t, NULL, &title_r);
-  SDL_FreeSurface(title_s);
-  SDL_DestroyTexture(title_t);
+  if (title_s) {
+    SDL_Texture *title_t =
+        SDL_CreateTextureFromSurface(timer->settings_ren, title_s);
+    SDL_Rect title_r = {20, 10, title_s->w, title_s->h};
+    SDL_RenderCopy(timer->settings_ren, title_t, NULL, &title_r);
+    SDL_FreeSurface(title_s);
+    SDL_DestroyTexture(title_t);
+  }
 
   const char *settings_names[] = {"Work Duration (min)",
                                   "Break Duration (min)",
@@ -497,9 +507,28 @@ void render_settings(Timer *timer, TTF_Font *font) {
 
   int num_settings = 9;
   int start_y = 50;
+  int row_h = 35; // Match Cocoa row height
+  int win_h = 420;
+  int win_w = 320;
+  int max_visible_h = win_h - start_y;
+  int total_h = num_settings * row_h;
+
+  // Clamp scroll
+  int max_scroll = fmax(0, total_h - max_visible_h + 20); // +20 padding
+  timer->settings_scroll_y =
+      fmin(max_scroll, fmax(0, timer->settings_scroll_y));
+
+  SDL_Rect clip_rect = {0, start_y, win_w, max_visible_h};
+  SDL_RenderSetClipRect(timer->settings_ren, &clip_rect);
 
   for (int i = 0; i < num_settings; i++) {
-    SDL_Rect row_rect = {10, start_y + i * 35 - 5, 380, 30};
+    int y = start_y + i * row_h - timer->settings_scroll_y;
+
+    // Cull invisible items
+    if (y + row_h < start_y || y > win_h)
+      continue;
+
+    SDL_Rect row_rect = {10, y + 2, win_w - 20, row_h - 4};
 
     if (timer->selected_setting == i) {
       SDL_SetRenderDrawColor(timer->settings_ren, highlight.r, highlight.g,
@@ -543,11 +572,26 @@ void render_settings(Timer *timer, TTF_Font *font) {
     }
 
     SDL_Surface *s = TTF_RenderText_Blended(font, buf, text_color);
-    SDL_Texture *t = SDL_CreateTextureFromSurface(timer->settings_ren, s);
-    SDL_Rect r = {20, start_y + i * 35, s->w, s->h};
-    SDL_RenderCopy(timer->settings_ren, t, NULL, &r);
-    SDL_FreeSurface(s);
-    SDL_DestroyTexture(t);
+    if (s) {
+      SDL_Texture *t = SDL_CreateTextureFromSurface(timer->settings_ren, s);
+      SDL_Rect r = {20, y + (row_h - s->h) / 2, s->w,
+                    s->h}; // Center vertically
+      SDL_RenderCopy(timer->settings_ren, t, NULL, &r);
+      SDL_FreeSurface(s);
+      SDL_DestroyTexture(t);
+    }
+  }
+
+  SDL_RenderSetClipRect(timer->settings_ren, NULL);
+
+  // Scrollbar if needed
+  if (total_h > max_visible_h) {
+    int bar_h = (float)max_visible_h / total_h * max_visible_h;
+    int bar_y = start_y + ((float)timer->settings_scroll_y / max_scroll) *
+                              (max_visible_h - bar_h);
+    SDL_SetRenderDrawColor(timer->settings_ren, 80, 80, 90, 200);
+    SDL_Rect scroll_rect = {390, bar_y, 6, bar_h};
+    SDL_RenderFillRect(timer->settings_ren, &scroll_rect);
   }
 
   SDL_RenderPresent(timer->settings_ren);
@@ -796,6 +840,7 @@ int main(int argc, char *argv[]) {
   SDL_GL_SetAttribute(SDL_GL_MULTISAMPLESAMPLES, 4);
 
   TTF_Font *font_small = TTF_OpenFont(FONT_PATH, 10);
+  TTF_Font *font_medium = TTF_OpenFont(FONT_PATH, 16);
 
   Timer timer = {w};
   timer.last_frame_time = SDL_GetTicks();
@@ -844,6 +889,9 @@ int main(int argc, char *argv[]) {
   if (!font_large) {
     fprintf(stderr, "Failed to load large font: %s\n", TTF_GetError());
   }
+  if (!font_medium) {
+    fprintf(stderr, "Failed to load medium font: %s\n", TTF_GetError());
+  }
   if (!font_small) {
     fprintf(stderr, "Failed to load small font: %s\n", TTF_GetError());
   }
@@ -885,7 +933,7 @@ int main(int argc, char *argv[]) {
       }
 
       if (e.type == SDL_KEYDOWN || e.type == SDL_MOUSEBUTTONDOWN ||
-          e.type == SDL_MOUSEMOTION) {
+          e.type == SDL_MOUSEMOTION || e.type == SDL_MOUSEWHEEL) {
         timer.is_away = false;
         if (timer.is_shaking) {
           SDL_SetWindowPosition(window, timer.base_x, timer.base_y);
@@ -905,7 +953,7 @@ int main(int argc, char *argv[]) {
           reset_timer(&timer, window);
         } else if (e.key.keysym.sym == SDLK_s) {
           if (!timer.settings_win)
-            open_settings_window(&timer, font_small);
+            open_settings_window(&timer, font_medium);
           else {
             SDL_DestroyRenderer(timer.settings_ren);
             SDL_DestroyWindow(timer.settings_win);
@@ -984,9 +1032,94 @@ int main(int argc, char *argv[]) {
           e.window.event == SDL_WINDOWEVENT_FOCUS_LOST) {
         snap_to_corner(window);
       }
+      // Mouse Handling for Settings Window
+      if (timer.settings_win && e.type == SDL_MOUSEMOTION &&
+          e.motion.windowID == SDL_GetWindowID(timer.settings_win)) {
+        int start_y = 60;
+        int row_h = 40;
+        int my = e.motion.y;
+        int scrolled_y = my + timer.settings_scroll_y;
+        if (my >= start_y && my < 450) {
+          int row = (scrolled_y - start_y) / row_h;
+          if (row >= 0 && row < 9) {
+            timer.selected_setting = row;
+          }
+        }
+      }
+
+      if (timer.settings_win && e.type == SDL_MOUSEWHEEL &&
+          e.wheel.windowID == SDL_GetWindowID(timer.settings_win)) {
+        timer.settings_scroll_y -= e.wheel.y * 20; // Scroll speed
+        // Clamping happens in render_settings for visual simplicity
+        // but good to clamp here too if we used scroll_y elsewhere immediately
+      }
+
+      if (timer.settings_win && e.type == SDL_MOUSEBUTTONDOWN &&
+          e.button.windowID == SDL_GetWindowID(timer.settings_win)) {
+        int start_y = 60;
+        int row_h = 40;
+        int my = e.button.y;
+        // Only handle clicks on valid rows
+        int scrolled_y = my + timer.settings_scroll_y;
+        if (my >= start_y && my < 450) {
+          int row = (scrolled_y - start_y) / row_h;
+          if (row >= 0 && row < 9 && timer.selected_setting == row) {
+            // Simulate LEFT/RIGHT key logic
+            int dir = (e.button.button == SDL_BUTTON_LEFT) ? 1 : -1;
+            // For boolean toggles, any click toggles it
+            if (row == 4 || row == 5)
+              dir = 1;
+
+            switch (row) {
+            case 0:
+              timer.config.work_min = fmax(1, timer.config.work_min + dir);
+              break;
+            case 1:
+              timer.config.break_min = fmax(1, timer.config.break_min + dir);
+              break;
+            case 2:
+              timer.config.long_break_min =
+                  fmax(1, timer.config.long_break_min + dir);
+              break;
+            case 3:
+              timer.config.sessions_until_long =
+                  fmax(1, timer.config.sessions_until_long + dir);
+              break;
+            case 4:
+              timer.config.sound_on = !timer.config.sound_on;
+              break;
+            case 5:
+              timer.config.auto_start = !timer.config.auto_start;
+              break;
+            case 6:
+              timer.config.opacity =
+                  fmax(10, fmin(100, timer.config.opacity + dir * 5));
+              break;
+            case 7:
+              timer.config.volume =
+                  fmax(0, fmin(128, timer.config.volume + dir * 8));
+              break;
+            case 8:
+              timer.config.focus_threshold =
+                  fmax(5, timer.config.focus_threshold + dir * 5);
+              break;
+            }
+            if (timer.selected_setting == 4 || timer.selected_setting == 7) {
+              Mix_VolumeMusic(timer.config.volume);
+              if (timer.config.sound_on)
+                Mix_ResumeMusic();
+              else
+                Mix_HaltMusic();
+            }
+            save_config(&timer.config);
+          }
+        }
+      }
+
       if (e.type == SDL_WINDOWEVENT &&
           e.window.event == SDL_WINDOWEVENT_FOCUS_GAINED) {
         Config old = timer.config;
+
         load_config(&timer.config);
         if (old.work_min != timer.config.work_min ||
             old.break_min != timer.config.break_min) {
@@ -1013,7 +1146,8 @@ int main(int argc, char *argv[]) {
     double dt = (now - timer.last_frame_time) / 1000.0;
     timer.last_frame_time = now;
 
-    // Focus detection
+    // Focus detection (macOS only)
+#ifdef __APPLE__
     double idle = CGEventSourceSecondsSinceLastEventType(
         kCGEventSourceStateCombinedSessionState, kCGAnyInputEventType);
     if (idle > timer.config.focus_threshold && timer.state == w &&
@@ -1022,6 +1156,7 @@ int main(int argc, char *argv[]) {
       timer.is_away = true;
       Mix_PauseMusic();
     }
+#endif
 
     if (!timer.paused) {
       if (timer.is_shaking) {
@@ -1107,7 +1242,7 @@ int main(int argc, char *argv[]) {
 
     // Draw settings if open
     if (timer.settings_win) {
-      render_settings(&timer, font_small);
+      render_settings(&timer, font_medium);
     }
     if (timer.streak_win) {
       render_streak(&timer, font_small);
@@ -1160,6 +1295,7 @@ int main(int argc, char *argv[]) {
   }
   Mix_CloseAudio();
   TTF_CloseFont(font_large);
+  TTF_CloseFont(font_medium);
   TTF_CloseFont(font_small);
   TTF_Quit();
   SDL_GL_DeleteContext(context);
