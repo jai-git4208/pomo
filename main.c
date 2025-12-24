@@ -407,7 +407,7 @@ void open_settings_window(Timer *timer, TTF_Font *font) {
     return;
 
   timer->settings_win =
-      SDL_CreateWindow("Settings", SDL_WINDOWPOS_CENTERED,
+      SDL_CreateWindow("Advanced Settings", SDL_WINDOWPOS_CENTERED,
                        SDL_WINDOWPOS_CENTERED, 400, 350, SDL_WINDOW_SHOWN);
   timer->settings_ren =
       SDL_CreateRenderer(timer->settings_win, -1, SDL_RENDERER_ACCELERATED);
@@ -487,7 +487,7 @@ void open_streak_window(Timer *timer, TTF_Font *font) {
   if (timer->streak_win)
     return;
   timer->streak_win =
-      SDL_CreateWindow("Your Streak", SDL_WINDOWPOS_CENTERED,
+      SDL_CreateWindow("Streak Counter", SDL_WINDOWPOS_CENTERED,
                        SDL_WINDOWPOS_CENTERED, 300, 200, SDL_WINDOW_SHOWN);
   timer->streak_ren =
       SDL_CreateRenderer(timer->streak_win, -1, SDL_RENDERER_ACCELERATED);
@@ -799,7 +799,7 @@ int main(int argc, char *argv[]) {
     double dt = (now - timer.last_frame_time) / 1000.0;
     timer.last_frame_time = now;
 
-    // Focus detection (ppl cant trick pomo)
+    // Focus detection
     double idle = CGEventSourceSecondsSinceLastEventType(
         kCGEventSourceStateCombinedSessionState, kCGAnyInputEventType);
     if (idle > timer.config.focus_threshold && timer.state == w &&
@@ -846,7 +846,7 @@ int main(int argc, char *argv[]) {
     } else {
       timer.pause_duration += dt;
       if (timer.pause_duration > 300.0) { // 5 minutes
-        if (!timer.is_shaking) { //shaky shaky shaky
+        if (!timer.is_shaking) {
           SDL_GetWindowPosition(window, &timer.base_x, &timer.base_y);
           timer.is_shaking = true;
         }
@@ -928,7 +928,7 @@ int main(int argc, char *argv[]) {
     } else if (timer.paused) {
       strcpy(label, "PAUSED");
     } else if (timer.state == w) {
-      sprintf(label, "GOOD BOY SESSION #%d", timer.session_count + 1);
+      sprintf(label, "GOOD BOY :3 Session #%d", timer.session_count + 1);
     } else {
       strcpy(label, "BREAK! ENJOY");
     }

@@ -122,7 +122,7 @@ typedef enum { STATE_WORK, STATE_BREAK } TimerState;
           ? @"PAUSED"
           : (self.state == STATE_WORK
                  ? [NSString
-                       stringWithFormat:@"WORK #%d",
+                       stringWithFormat:@"GOOD BOY :3 Session #%d",
                                         [(PomoAppDelegate *)[NSApp delegate]
                                             sessionCount] +
                                             1]
