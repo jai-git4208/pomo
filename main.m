@@ -15,6 +15,7 @@ typedef enum { STATE_WORK, STATE_BREAK } TimerState;
 @property(nonatomic, assign) double secRemaining;
 @property(nonatomic, assign) TimerState state;
 @property(nonatomic, assign) BOOL paused;
+@property(nonatomic, assign) BOOL isAway;
 @property(nonatomic, assign) int workMin;
 @property(nonatomic, assign) int breakMin;
 @end
@@ -40,7 +41,9 @@ typedef enum { STATE_WORK, STATE_BREAK } TimerState;
 @property(nonatomic, assign) BOOL autoStart;
 @property(nonatomic, assign) int opacity;
 @property(nonatomic, assign) int volume;
+@property(nonatomic, assign) int focusThreshold;
 @property(nonatomic, assign) int sessionCount;
+@property(nonatomic, assign) BOOL isAway;
 @property(nonatomic, strong) NSString *lastDate;
 @property(nonatomic, assign) int dailySessions;
 @property(nonatomic, assign) int consecutiveDays;
@@ -54,6 +57,7 @@ typedef enum { STATE_WORK, STATE_BREAK } TimerState;
 @property(nonatomic, strong) NSButton *autoStartCheck;
 @property(nonatomic, strong) NSSlider *opacitySlider;
 @property(nonatomic, strong) NSSlider *volumeSlider;
+@property(nonatomic, strong) NSTextField *focusField;
 
 - (void)handleKeyDown:(NSEvent *)event;
 - (void)snapToNearestCorner;
@@ -124,6 +128,10 @@ typedef enum { STATE_WORK, STATE_BREAK } TimerState;
                                             1]
                  : @"BREAK! ENJOY");
 
+  if (self.isAway) {
+    labelStr = @"AWAY? FOCUS!";
+  }
+
   NSMutableParagraphStyle *style = [[NSMutableParagraphStyle alloc] init];
   style.alignment = NSTextAlignmentCenter;
 
@@ -162,6 +170,7 @@ typedef enum { STATE_WORK, STATE_BREAK } TimerState;
 }
 
 - (void)mouseDown:(NSEvent *)event {
+  [(PomoAppDelegate *)[NSApp delegate] setIsAway:NO];
   [self.window performWindowDragWithEvent:event];
   // After performWindowDragWithEvent returns, the drag is finished.
   [(PomoAppDelegate *)[NSApp delegate] snapToNearestCorner];
@@ -264,6 +273,16 @@ typedef enum { STATE_WORK, STATE_BREAK } TimerState;
 
 - (void)tick:(NSTimer *)timer {
   if (!self.pomoView.paused) {
+    double idle = CGEventSourceSecondsSinceLastEventType(
+        kCGEventSourceStateCombinedSessionState, kCGAnyInputEventType);
+    if (idle > self.focusThreshold && self.pomoView.state == STATE_WORK &&
+        !self.pomoView.paused) {
+      self.pomoView.paused = YES;
+      self.isAway = YES;
+      self.pomoView.isAway = YES;
+      [self.audioPlayer pause];
+    }
+
     if (self.isShaking) {
       NSRect frame = self.window.frame;
       frame.origin = self.baseOrigin;
@@ -387,6 +406,7 @@ typedef enum { STATE_WORK, STATE_BREAK } TimerState;
   self.autoStart = NO;
   self.opacity = 100;
   self.volume = 128;
+  self.focusThreshold = 60;
 
   NSString *path = @"pomo.cfg";
   NSString *content = [NSString stringWithContentsOfFile:path
@@ -415,6 +435,8 @@ typedef enum { STATE_WORK, STATE_BREAK } TimerState;
           self.opacity = val;
         else if ([key isEqualToString:@"volume"])
           self.volume = val;
+        else if ([key isEqualToString:@"focus_threshold"])
+          self.focusThreshold = val;
         else if ([key isEqualToString:@"x"]) {
           NSRect frame = self.window.frame;
           frame.origin.x = val;
@@ -443,6 +465,7 @@ typedef enum { STATE_WORK, STATE_BREAK } TimerState;
   [s appendFormat:@"auto_start=%d\n", self.autoStart ? 1 : 0];
   [s appendFormat:@"opacity=%d\n", self.opacity];
   [s appendFormat:@"volume=%d\n", self.volume];
+  [s appendFormat:@"focus_threshold=%d\n", self.focusThreshold];
   [s appendFormat:@"x=%d\n", (int)self.window.frame.origin.x];
   [s appendFormat:@"y=%d\n", (int)self.window.frame.origin.y];
   [s writeToFile:@"pomo.cfg"
@@ -531,6 +554,8 @@ typedef enum { STATE_WORK, STATE_BREAK } TimerState;
 }
 
 - (void)handleKeyDown:(NSEvent *)event {
+  self.isAway = NO;
+  self.pomoView.isAway = NO;
   if (event.keyCode == 49) { // Space
     self.pomoView.paused = !self.pomoView.paused;
   } else if (event.keyCode == 15) { // 'r'
@@ -550,7 +575,7 @@ typedef enum { STATE_WORK, STATE_BREAK } TimerState;
     return;
   }
 
-  NSRect frame = NSMakeRect(0, 0, 300, 350);
+  NSRect frame = NSMakeRect(0, 0, 300, 380);
   self.settingsWindow = [[NSWindow alloc]
       initWithContentRect:frame
                 styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable
@@ -645,6 +670,17 @@ typedef enum { STATE_WORK, STATE_BREAK } TimerState;
                                          action:nil];
   self.volumeSlider.frame = NSMakeRect(80, y, 180, 20);
   [cv addSubview:self.volumeSlider];
+  y -= 30;
+
+  // Focus Threshold
+  [[NSTextField labelWithString:@"Focus Threshold (s):"]
+      setFrame:NSMakeRect(20, y, 130, 20)];
+  [cv addSubview:[cv.subviews lastObject]];
+  self.focusField = [NSTextField
+      textFieldWithString:[NSString
+                              stringWithFormat:@"%d", self.focusThreshold]];
+  self.focusField.frame = NSMakeRect(150, y, 100, 20);
+  [cv addSubview:self.focusField];
   y -= 50;
 
   // Apply
@@ -666,6 +702,7 @@ typedef enum { STATE_WORK, STATE_BREAK } TimerState;
   BOOL newAuto = (self.autoStartCheck.state == NSControlStateValueOn);
   int newOp = [self.opacitySlider intValue];
   int newVol = [self.volumeSlider intValue];
+  int newFT = [self.focusField intValue];
 
   self.workMin = newW;
   self.breakMin = newB;
@@ -675,6 +712,7 @@ typedef enum { STATE_WORK, STATE_BREAK } TimerState;
   self.autoStart = newAuto;
   self.opacity = newOp;
   self.volume = newVol;
+  self.focusThreshold = newFT;
 
   self.pomoView.workMin = self.workMin;
   self.pomoView.breakMin = self.breakMin;

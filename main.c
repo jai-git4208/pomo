@@ -1,3 +1,4 @@
+#include <ApplicationServices/ApplicationServices.h>
 #include <SDL2/SDL.h>
 #include <SDL2/SDL_mixer.h>
 #include <SDL2/SDL_opengl.h>
@@ -28,8 +29,9 @@ typedef struct {
   int sessions_until_long;
   bool sound_on;
   bool auto_start;
-  int opacity; // 0-100
-  int volume;  // 0-128
+  int opacity;         // 0-100
+  int volume;          // 0-128
+  int focus_threshold; // seconds
   int x, y;
 } Config;
 
@@ -55,6 +57,7 @@ typedef struct {
   SDL_Renderer *settings_ren;
   int session_count;
   int selected_setting;
+  bool is_away;
   Streak streak;
   SDL_Window *streak_win;
   SDL_Renderer *streak_ren;
@@ -266,6 +269,7 @@ void save_config(const Config *cfg) {
   fprintf(f, "auto_start=%d\n", cfg->auto_start ? 1 : 0);
   fprintf(f, "opacity=%d\n", cfg->opacity);
   fprintf(f, "volume=%d\n", cfg->volume);
+  fprintf(f, "focus_threshold=%d\n", cfg->focus_threshold);
   fprintf(f, "x=%d\n", cfg->x);
   fprintf(f, "y=%d\n", cfg->y);
   fclose(f);
@@ -280,6 +284,7 @@ void load_config(Config *cfg) {
   cfg->auto_start = false;
   cfg->opacity = 100;
   cfg->volume = 128;
+  cfg->focus_threshold = 60;
   cfg->x = SDL_WINDOWPOS_CENTERED;
   cfg->y = SDL_WINDOWPOS_CENTERED;
 
@@ -305,6 +310,8 @@ void load_config(Config *cfg) {
     if (sscanf(line, "opacity=%d", &cfg->opacity) == 1)
       continue;
     if (sscanf(line, "volume=%d", &cfg->volume) == 1)
+      continue;
+    if (sscanf(line, "focus_threshold=%d", &cfg->focus_threshold) == 1)
       continue;
     if (sscanf(line, "x=%d", &cfg->x) == 1)
       continue;
@@ -400,7 +407,7 @@ void open_settings_window(Timer *timer, TTF_Font *font) {
     return;
 
   timer->settings_win =
-      SDL_CreateWindow("Advanced Settings", SDL_WINDOWPOS_CENTERED,
+      SDL_CreateWindow("Settings", SDL_WINDOWPOS_CENTERED,
                        SDL_WINDOWPOS_CENTERED, 400, 350, SDL_WINDOW_SHOWN);
   timer->settings_ren =
       SDL_CreateRenderer(timer->settings_win, -1, SDL_RENDERER_ACCELERATED);
@@ -425,9 +432,10 @@ void render_settings(Timer *timer, TTF_Font *font) {
                                   "Sound Enabled",
                                   "Auto-start Next Session",
                                   "Opacity (0-100)",
-                                  "Volume (0-128)"};
+                                  "Volume (0-128)",
+                                  "Focus Idle Thr. (s)"};
 
-  int num_settings = 8;
+  int num_settings = 9;
 
   for (int i = 0; i < num_settings; i++) {
     SDL_Color color = (timer->selected_setting == i) ? yellow : white;
@@ -459,6 +467,9 @@ void render_settings(Timer *timer, TTF_Font *font) {
     case 7:
       sprintf(buf, "%s: %d", settings_names[i], timer->config.volume);
       break;
+    case 8:
+      sprintf(buf, "%s: %d", settings_names[i], timer->config.focus_threshold);
+      break;
     }
 
     SDL_Surface *s = TTF_RenderText_Blended(font, buf, color);
@@ -476,7 +487,7 @@ void open_streak_window(Timer *timer, TTF_Font *font) {
   if (timer->streak_win)
     return;
   timer->streak_win =
-      SDL_CreateWindow("Streak Counter", SDL_WINDOWPOS_CENTERED,
+      SDL_CreateWindow("Your Streak", SDL_WINDOWPOS_CENTERED,
                        SDL_WINDOWPOS_CENTERED, 300, 200, SDL_WINDOW_SHOWN);
   timer->streak_ren =
       SDL_CreateRenderer(timer->streak_win, -1, SDL_RENDERER_ACCELERATED);
@@ -664,6 +675,11 @@ int main(int argc, char *argv[]) {
         }
       }
 
+      if (e.type == SDL_KEYDOWN || e.type == SDL_MOUSEBUTTONDOWN ||
+          e.type == SDL_MOUSEMOTION) {
+        timer.is_away = false;
+      }
+
       if (e.type == SDL_KEYDOWN) {
         if (e.key.keysym.sym == SDLK_SPACE) {
           timer.paused = !timer.paused;
@@ -696,9 +712,9 @@ int main(int argc, char *argv[]) {
 
         if (timer.settings_win) {
           if (e.key.keysym.sym == SDLK_UP) {
-            timer.selected_setting = (timer.selected_setting - 1 + 8) % 8;
+            timer.selected_setting = (timer.selected_setting - 1 + 9) % 9;
           } else if (e.key.keysym.sym == SDLK_DOWN) {
-            timer.selected_setting = (timer.selected_setting + 1) % 8;
+            timer.selected_setting = (timer.selected_setting + 1) % 9;
           } else if (e.key.keysym.sym == SDLK_LEFT ||
                      e.key.keysym.sym == SDLK_RIGHT) {
             int dir = (e.key.keysym.sym == SDLK_RIGHT) ? 1 : -1;
@@ -730,6 +746,10 @@ int main(int argc, char *argv[]) {
             case 7:
               timer.config.volume =
                   fmax(0, fmin(128, timer.config.volume + dir * 8));
+              break;
+            case 8:
+              timer.config.focus_threshold =
+                  fmax(5, timer.config.focus_threshold + dir * 5);
               break;
             }
             if (timer.selected_setting == 6) {
@@ -779,6 +799,16 @@ int main(int argc, char *argv[]) {
     double dt = (now - timer.last_frame_time) / 1000.0;
     timer.last_frame_time = now;
 
+    // Focus detection (ppl cant trick pomo)
+    double idle = CGEventSourceSecondsSinceLastEventType(
+        kCGEventSourceStateCombinedSessionState, kCGAnyInputEventType);
+    if (idle > timer.config.focus_threshold && timer.state == w &&
+        !timer.paused) {
+      timer.paused = true;
+      timer.is_away = true;
+      Mix_PauseMusic();
+    }
+
     if (!timer.paused) {
       if (timer.is_shaking) {
         SDL_SetWindowPosition(window, timer.base_x, timer.base_y);
@@ -816,7 +846,7 @@ int main(int argc, char *argv[]) {
     } else {
       timer.pause_duration += dt;
       if (timer.pause_duration > 300.0) { // 5 minutes
-        if (!timer.is_shaking) {
+        if (!timer.is_shaking) { //shaky shaky shaky
           SDL_GetWindowPosition(window, &timer.base_x, &timer.base_y);
           timer.is_shaking = true;
         }
@@ -893,10 +923,12 @@ int main(int argc, char *argv[]) {
 
     // label
     char label[64];
-    if (timer.paused) {
+    if (timer.is_away) {
+      strcpy(label, "AWAY? FOCUS!");
+    } else if (timer.paused) {
       strcpy(label, "PAUSED");
     } else if (timer.state == w) {
-      sprintf(label, "WORK #%d", timer.session_count + 1);
+      sprintf(label, "GOOD BOY SESSION #%d", timer.session_count + 1);
     } else {
       strcpy(label, "BREAK! ENJOY");
     }
